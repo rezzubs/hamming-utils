@@ -1,0 +1,13 @@
+[package]
+name = "systolic"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ndarray = "0.17.2"
+num-traits = "0.2.19"
+rand.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
