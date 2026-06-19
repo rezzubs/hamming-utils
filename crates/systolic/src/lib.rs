@@ -7,12 +7,15 @@
 //! the array.
 
 pub mod array;
+pub mod fault;
 mod helper;
+mod id;
 mod mixed_radix;
 #[cfg(test)]
 pub(crate) mod test_utilities;
 
 pub use array::{
-    Connection, CreationError, Index, Index2, InvalidMappingError, Mapping, Pass, SystolicArray,
-    shift_activations, unshift_output,
+    Connection, CreationError, Index, Index2, InvalidMappingError, Mapping, Pass,
+    SystolicArray, shift_activations, unshift_output,
 };
+pub use id::{ArrayConfig, Space};

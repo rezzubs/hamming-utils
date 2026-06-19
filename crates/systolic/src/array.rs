@@ -13,11 +13,13 @@ use std::{
     ops::{AddAssign, Mul},
 };
 
+use crate::fault::{FaultHook, NoFault, PeFaultRegister};
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 struct ProcessingElement<T> {
     weight: Register<T>,
     activation: Register<T>,
-    partial_sum: Register<T>,
+    accumulator: Register<T>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -34,18 +36,17 @@ pub enum CreationError {
 
 /// A simulator for a systolic array.
 ///
-/// This type exists to validate [`crate::mapping::Mapping`]s, .
+/// `H` is the fault hook applied to every register write and multiply-add in
+/// the run loop. The default `H = NoFault` is a zero-sized no-op and compiles
+/// away entirely.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystolicArray<T> {
-    /// The processing elements that make up the array.
+pub struct SystolicArray<T, H = NoFault> {
     elements: Array2<ProcessingElement<T>>,
+    pub hook: H,
 }
 
-impl<T> SystolicArray<T>
-where
-    T: Default + Clone,
-{
-    /// Create a new array.
+impl<T: Default + Clone> SystolicArray<T> {
+    /// Create a new array with a no-op fault hook.
     pub fn new(nrows: usize, ncols: usize) -> Result<Self, CreationError> {
         if nrows == 0 {
             return Err(CreationError::NoRows);
@@ -63,15 +64,16 @@ where
 
         Ok(Self {
             elements: Array2::from_elem((nrows, ncols), ProcessingElement::default()),
+            hook: NoFault,
         })
     }
 
-    /// Create a new array with the given weights.
+    /// Create a new array with weights pre-loaded, using a no-op fault hook.
     ///
     /// `weights` are assumed to be a matrix with shape `(out_features, in_features)`.
     ///
     /// # Panics if the size is great enough so it cannot be indexed by
-    /// ([`Index2`], [`Index2`]).
+    /// [`Index2`].
     pub fn from_weights(weights: &ArrayRef2<T>) -> Self {
         assert!(weights.nrows() < Index::MAX as usize);
         assert!(weights.ncols() < Index::MAX as usize);
@@ -81,6 +83,18 @@ where
         let mut array = Self::new(weights.ncols(), weights.nrows()).unwrap();
         array.set_weights(weights);
         array
+    }
+}
+
+impl<T, H> SystolicArray<T, H> {
+    /// Replace the fault hook, consuming this array and returning one with the
+    /// new hook installed. The element state (weights, activations, accumulators)
+    /// is preserved.
+    pub fn with_hook<H2>(self, hook: H2) -> SystolicArray<T, H2> {
+        SystolicArray {
+            elements: self.elements,
+            hook,
+        }
     }
 
     /// Returns the number of rows in the array.
@@ -93,6 +107,35 @@ where
         self.elements.ncols()
     }
 
+    /// Generate a mapping for the given matmul input-row and output-row counts.
+    ///
+    /// See [`Mapping::auto`] for details of the algorithm.
+    pub fn auto_mapping(&self, in_features: usize, out_features: usize) -> Mapping {
+        Mapping::auto(in_features, out_features, self.nrows(), self.ncols())
+    }
+
+    /// Generate a mapping for the given weights.
+    ///
+    /// `weights` are assumed to be an array with shape `(out_features, in_features)`.
+    ///
+    /// See [`Mapping::auto`] for details of the algorithm.
+    pub fn auto_mapping_for(&self, weights: &ArrayRef2<T>) -> Mapping {
+        Mapping::auto_for(weights, self.nrows(), self.ncols())
+    }
+
+    /// Check if the given mapping is usable on this array.
+    pub fn supports_mapping(&self, mapping: &Mapping) -> bool {
+        let (nrows, ncols) = mapping.array_size_min();
+
+        !(nrows > self.nrows() || ncols > self.ncols())
+    }
+}
+
+impl<T, H> SystolicArray<T, H>
+where
+    T: Default + Clone,
+    H: FaultHook<T>,
+{
     /// Sets the weights of the array. Expects a transposed weight matrix.
     ///
     /// `weights_raw` are assumed to be a matrix with shape `(in_features, out_features)`.
@@ -106,8 +149,15 @@ where
     pub fn set_weights_raw(&mut self, weights_raw: &ArrayRef2<T>) {
         assert_eq!(self.elements.shape(), weights_raw.shape());
 
-        for (index, weight) in weights_raw.indexed_iter() {
-            self.elements[index].weight.write(weight.clone());
+        for ((y, x), weight) in weights_raw.indexed_iter() {
+            let element_index = Index2 {
+                y: y as Index,
+                x: x as Index,
+            };
+            let weight = self
+                .hook
+                .on_write(element_index, PeFaultRegister::Weight, weight.clone());
+            self.elements[element_index].weight.write(weight);
         }
     }
 
@@ -182,18 +232,27 @@ where
             // partial sums from the previous cycle.
             for y in (0..self.nrows()).rev() {
                 for x in (0..self.ncols()).rev() {
-                    let current_element_index = [y, x];
+                    let current_element_index = Index2 {
+                        y: y as Index,
+                        x: x as Index,
+                    };
 
                     // Shift activations right
-                    let left_element_activation_value = if x == 0 {
+                    let incoming_activation = if x == 0 {
                         target_activation_column[y].clone()
                     } else {
-                        let left_element_index = [y, x - 1];
+                        let left_element_index = Index2 {
+                            y: y as Index,
+                            x: x as Index - 1,
+                        };
                         self.elements[left_element_index].activation.read()
                     };
-                    self.elements[current_element_index]
-                        .activation
-                        .write(left_element_activation_value);
+                    let incoming_activation = self.hook.on_write(
+                        current_element_index,
+                        PeFaultRegister::Activation,
+                        incoming_activation,
+                    );
+                    self.elements[[y, x]].activation.write(incoming_activation);
 
                     // Compute a new partial sum for this element
                     let (activation, weight) = {
@@ -203,13 +262,27 @@ where
                     let partial_sum_above = if y == 0 {
                         T::zero()
                     } else {
-                        let index_above = [y - 1, x];
-                        self.elements[index_above].partial_sum.read()
+                        let above_element_index = Index2 {
+                            y: y as Index - 1,
+                            x: x as Index,
+                        };
+                        self.elements[above_element_index].accumulator.read()
                     };
 
-                    self.elements[[y, x]]
-                        .partial_sum
-                        .write(activation * weight + partial_sum_above);
+                    let partial_sum = self.hook.multiply_add(
+                        current_element_index,
+                        activation,
+                        weight,
+                        partial_sum_above,
+                    );
+                    let partial_sum = self.hook.on_write(
+                        current_element_index,
+                        PeFaultRegister::Accumulator,
+                        partial_sum,
+                    );
+                    self.elements[current_element_index]
+                        .accumulator
+                        .write(partial_sum);
                 }
             }
 
@@ -221,12 +294,11 @@ where
             let offset = cycle - output_start_cycle;
             let output_y = output_y_max - offset;
 
-            // Copy the bottom row of partial sums into the output buffer.
             output_buffer.row_mut(output_y).assign(
                 &self
                     .elements
                     .row(self.nrows() - 1)
-                    .map(|e| e.partial_sum.read()),
+                    .map(|e| e.accumulator.read()),
             );
         }
 
@@ -243,33 +315,6 @@ where
         T: num_traits::Zero + AddAssign + Mul<Output = T>,
     {
         unshift_output(&self.run_shifted(shift_activations(activations)))
-    }
-
-    /// Generate a mapping for the given matmul input-row and output-row counts.
-    ///
-    /// See [`Mapping::auto`] for details of the algorithm.
-    ///
-    /// See also [`Self::auto_mapping_for`].
-    pub fn auto_mapping(&self, in_features: usize, out_features: usize) -> Mapping {
-        Mapping::auto(in_features, out_features, self.nrows(), self.ncols())
-    }
-
-    /// Generate a mapping for the given weights.
-    ///
-    /// `weights` are assumed to be an array with shape `(out_features, in_features)`.
-    ///
-    /// See [`Mapping::auto`] for details of the algorithm.
-    ///
-    /// See also [`Self::auto_mapping`].
-    pub fn auto_mapping_for(&self, weights: &ArrayRef2<T>) -> Mapping {
-        Mapping::auto_for(weights, self.nrows(), self.ncols())
-    }
-
-    /// Check if the given mapping is usable on this array.
-    pub fn supports_mapping(&self, mapping: &Mapping) -> bool {
-        let (nrows, ncols) = mapping.array_size_min();
-
-        !(nrows > self.nrows() || ncols > self.ncols())
     }
 
     /// Perform a matrix multiplication using the given mapping and

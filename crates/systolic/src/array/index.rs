@@ -1,87 +1,40 @@
-use crate::helper::{u64, u64_};
+use crate::helper::u64;
+use crate::id::{ArrayConfig, Space};
+use crate::mixed_radix;
 use ndarray::{NdIndex, prelude::*};
 
-/// The type for [`SystolicArray`] dimensions.
+/// The type for [`crate::SystolicArray`] dimensions.
 pub type Index = u16;
 
-/// An index into a [`SystolicArray`].
+/// An index into a [`crate::SystolicArray`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Index2 {
     pub x: Index,
     pub y: Index,
 }
 
-impl Index2 {
-    /// Returns an ID for this index, given the array size.
-    ///
-    /// Returns None on overflow
-    ///
-    /// # Panics
-    ///
-    /// - If index is out of bounds for the given dimensions.
-    /// - If either dimension is zero.
-    pub fn id(&self, array_nrows: usize, array_ncols: usize) -> Option<u64> {
-        assert!(array_nrows > 0);
-        assert!(array_ncols > 0);
+impl Space for Index2 {
+    type Context = ArrayConfig;
 
-        let array_nrows = u64_(array_nrows);
-        let array_ncols = u64_(array_ncols);
-
-        let x = u64_(self.x);
-        let y = u64_(self.y);
-
-        if x >= array_ncols {
-            panic!("column index out of bounds");
-        }
-        if y >= array_nrows {
-            panic!("row index out of bounds");
-        }
-
-        y.checked_add(array_nrows.checked_mul(x)?)
+    fn count(config: ArrayConfig) -> u64 {
+        config.nrows() * config.ncols()
     }
 
-    /// Returns the maximum ID value for a given array size.
-    ///
-    /// Return None on overflow
-    ///
-    /// # Panics
-    ///
-    /// - If either dimension is 0.
-    pub fn id_radix(array_nrows: usize, array_ncols: usize) -> Option<u64> {
-        assert!(array_nrows > 0);
-        assert!(array_ncols > 0);
+    fn to_index(&self, config: ArrayConfig) -> u64 {
+        let x = u64(self.x);
+        let y = u64(self.y);
 
-        u64_(array_nrows).checked_mul(u64_(array_ncols))
+        mixed_radix::encode([x, y], [config.ncols(), config.nrows()])
+            .expect("Index2 coordinates must be within array bounds")
     }
 
-    /// Converts an ID back into an , if possible.
-    ///
-    /// # Panics
-    ///
-    /// - If either dimension is 0.
-    /// - If the ID is out of bounds for the given array size.
-    pub fn from_id(id: u64, array_nrows: usize, array_ncols: usize) -> Option<Self> {
-        assert!(array_nrows > 0);
-        assert!(array_ncols > 0);
+    fn from_index(index: u64, config: ArrayConfig) -> Self {
+        let [x, y] = mixed_radix::decode(index, [config.ncols(), config.nrows()])
+            .expect("index must be in 0..count");
+        let x = u16::try_from(x).expect("x coordinate must fit in u16");
+        let y = u16::try_from(y).expect("y coordinate must fit in u16");
 
-        let array_nrows = u64_(array_nrows);
-        let array_ncols = u64_(array_ncols);
-
-        // Already checked for zero
-        let x_id = id / array_nrows;
-        let y_id = id % array_nrows;
-
-        let x = u16::try_from(x_id).ok()?;
-        let y = u16::try_from(y_id).ok()?;
-
-        if u64(y) >= array_nrows {
-            return None;
-        }
-        if u64(x) >= array_ncols {
-            return None;
-        }
-
-        Some(Self { x, y })
+        Self { x, y }
     }
 }
 
@@ -93,5 +46,47 @@ unsafe impl NdIndex<Ix2> for Index2 {
 
     fn index_unchecked(&self, strides: &Ix2) -> isize {
         (self.y as usize, self.x as usize).index_unchecked(strides)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Space;
+
+    fn config(nrows: usize, ncols: usize) -> ArrayConfig {
+        ArrayConfig::new(nrows, ncols, 8)
+    }
+
+    #[test]
+    fn to_index_matches_formula() {
+        // index = x + ncols * y
+        let cfg = config(5, 7);
+        let element_index = Index2 { x: 3, y: 4 };
+        assert_eq!(element_index.to_index(cfg), 3 + 7 * 4);
+    }
+
+    #[test]
+    fn round_trip() {
+        let cfg = config(5, 7);
+        for y in 0..5u16 {
+            for x in 0..7u16 {
+                let element_index = Index2 { x, y };
+                assert_eq!(Index2::from_index(element_index.to_index(cfg), cfg), element_index);
+            }
+        }
+    }
+
+    #[test]
+    fn count_equals_total_elements() {
+        let cfg = config(5, 7);
+        assert_eq!(Index2::count(cfg), 35);
+    }
+
+    #[test]
+    #[should_panic]
+    fn out_of_bounds_panics() {
+        let cfg = config(5, 7);
+        let _ = Index2 { x: 7, y: 0 }.to_index(cfg);
     }
 }
