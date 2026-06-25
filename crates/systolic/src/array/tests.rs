@@ -1,5 +1,7 @@
+use crate::fault::{PeFaultRegister, RandomFault, RegisterHook, StuckAt, XorMaskHook};
 use crate::test_utilities::{ARR_SIZE, generate_array, generate_weights_and_activations};
 use proptest::prelude::*;
+use rand::SeedableRng;
 use std::ops::Range;
 
 use super::*;
@@ -165,4 +167,47 @@ proptest! {
         let expected_result = weights.dot(&activations);
         assert_eq!(result, expected_result);
     }
+}
+
+#[test]
+fn weight_register_fault_corrupts_output() {
+    // 2x2 array. PE(y=0, x=0) stores weights[0,0] = 4 (0b100).
+    // Stuck-at-one on bit 0 changes 4 → 5 during weight loading.
+    // All other weights are zero so only column 0 is affected.
+    let weights = array![[4u32, 0], [0, 0]];
+    let activations = array![[1u32], [0]];
+
+    let hook = RegisterHook {
+        target: Index2 { x: 0, y: 0 },
+        register: PeFaultRegister::Weight,
+        bit_index: 0,
+        stuck_at: StuckAt::One,
+    };
+
+    let mut sa = SystolicArray::<u32>::new(2, 2).unwrap().with_hook(hook);
+    sa.set_weights(&weights);
+    let result = sa.run(&activations);
+
+    assert_eq!(result, array![[5u32], [0]]);
+}
+
+#[test]
+fn xor_mask_fault_corrupts_multiply_add() {
+    // 1x1 array. The single PE computes 2 * 3 + 0 = 6 cleanly.
+    // XOR mask 1 flips bit 0: 6 (0b110) XOR 1 = 7 (0b111).
+    let weights = array![[3u8]];
+    let activations = array![[2u8]];
+
+    let fault = RandomFault {
+        target: Index2 { x: 0, y: 0 },
+        entries: Box::from([(1u8, 1.0_f64)]),
+    };
+    let hook = XorMaskHook::from_fault(fault, rand::rngs::StdRng::seed_from_u64(0))
+        .expect("single positive weight must produce a valid distribution");
+
+    let mut sa = SystolicArray::<u8>::new(1, 1).unwrap().with_hook(hook);
+    sa.set_weights(&weights);
+    let result = sa.run(&activations);
+
+    assert_eq!(result, array![[7u8]]);
 }

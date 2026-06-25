@@ -52,3 +52,47 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{RandomFault, XorMaskHook};
+    use crate::fault::FaultHook;
+    use crate::Index2;
+    use rand::SeedableRng;
+
+    fn target() -> Index2 {
+        Index2 { x: 0, y: 0 }
+    }
+
+    fn other_pe() -> Index2 {
+        Index2 { x: 1, y: 0 }
+    }
+
+    fn make_hook(mask: u8) -> XorMaskHook<u8, rand::rngs::StdRng> {
+        let fault = RandomFault { target: target(), entries: Box::from([(mask, 1.0_f64)]) };
+        XorMaskHook::from_fault(fault, rand::rngs::StdRng::seed_from_u64(0))
+            .expect("single positive weight must produce a valid distribution")
+    }
+
+    #[test]
+    fn multiply_add_applies_mask_at_target() {
+        let mut hook = make_hook(0b0000_0010);
+        // 2 * 3 + 0 = 6 = 0b0000_0110, XOR 0b0000_0010 = 4
+        let result: u8 = hook.multiply_add(target(), 2, 3, 0);
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    fn multiply_add_passes_through_at_non_target() {
+        let mut hook = make_hook(0b0000_0010);
+        let result: u8 = hook.multiply_add(other_pe(), 2, 3, 0);
+        assert_eq!(result, 6);
+    }
+
+    #[test]
+    fn multiply_add_zero_mask_is_passthrough() {
+        let mut hook = make_hook(0);
+        let result: u8 = hook.multiply_add(target(), 2, 3, 0);
+        assert_eq!(result, 6);
+    }
+}

@@ -203,3 +203,110 @@ impl<T: BitBuffer> FaultHook<T> for RegisterHook {
         v
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PeFaultRegister, PeRegisterFault, RegisterFault, RegisterHook, StuckAt, TargetedFault,
+    };
+    use crate::fault::FaultHook;
+    use crate::id::{ArrayConfig, Space};
+    use crate::Index2;
+
+    fn config(nrows: usize, ncols: usize, dtype_bits: u8) -> ArrayConfig {
+        ArrayConfig::new(nrows, ncols, dtype_bits)
+    }
+
+    #[test]
+    fn stuck_at_round_trip() {
+        for variant in [StuckAt::Zero, StuckAt::One] {
+            assert_eq!(StuckAt::from_index(variant.to_index(()), ()), variant);
+        }
+        for index in 0..StuckAt::count(()) {
+            assert_eq!(StuckAt::from_index(index, ()).to_index(()), index);
+        }
+    }
+
+    #[test]
+    fn pe_fault_register_round_trip() {
+        for variant in [
+            PeFaultRegister::Activation,
+            PeFaultRegister::Weight,
+            PeFaultRegister::Accumulator,
+        ] {
+            assert_eq!(PeFaultRegister::from_index(variant.to_index(()), ()), variant);
+        }
+        for index in 0..PeFaultRegister::count(()) {
+            assert_eq!(PeFaultRegister::from_index(index, ()).to_index(()), index);
+        }
+    }
+
+    #[test]
+    fn register_fault_round_trip() {
+        let context = config(1, 1, 8);
+        for index in 0..RegisterFault::count(context) {
+            let fault = RegisterFault::from_index(index, context);
+            assert_eq!(fault.to_index(context), index);
+        }
+    }
+
+    #[test]
+    fn pe_register_fault_round_trip() {
+        let context = config(1, 1, 8);
+        for index in 0..PeRegisterFault::count(context) {
+            let fault = PeRegisterFault::from_index(index, context);
+            assert_eq!(fault.to_index(context), index);
+        }
+    }
+
+    #[test]
+    fn targeted_fault_round_trip() {
+        let context = config(2, 2, 4);
+        for index in 0..TargetedFault::<PeRegisterFault>::count(context) {
+            let fault = TargetedFault::<PeRegisterFault>::from_index(index, context);
+            assert_eq!(fault.to_index(context), index);
+        }
+    }
+
+    fn make_hook(
+        x: u16,
+        y: u16,
+        register: PeFaultRegister,
+        bit_index: u8,
+        stuck_at: StuckAt,
+    ) -> RegisterHook {
+        RegisterHook { target: Index2 { x, y }, register, bit_index, stuck_at }
+    }
+
+    #[test]
+    fn on_write_stuck_at_zero_clears_bit() {
+        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 =
+            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        assert_eq!(result, 0xFE);
+    }
+
+    #[test]
+    fn on_write_stuck_at_one_sets_bit() {
+        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::One);
+        let result: u8 =
+            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0x00);
+        assert_eq!(result, 0x01);
+    }
+
+    #[test]
+    fn on_write_non_matching_pe_passes_through() {
+        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 =
+            hook.on_write(Index2 { x: 1, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        assert_eq!(result, 0xFF);
+    }
+
+    #[test]
+    fn on_write_non_matching_register_passes_through() {
+        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 =
+            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Activation, 0xFF);
+        assert_eq!(result, 0xFF);
+    }
+}
