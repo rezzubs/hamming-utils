@@ -8,6 +8,7 @@
 
 pub mod array;
 mod helper;
+mod mixed_radix;
 #[cfg(test)]
 pub(crate) mod test_utilities;
 
