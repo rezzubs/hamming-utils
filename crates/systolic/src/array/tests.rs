@@ -222,6 +222,59 @@ fn weight_fault_propagates_to_lower_pes() {
 }
 
 #[test]
+fn with_hook_rederives_weights() {
+    // Load weights under a fault, then swap to NoFault via with_hook.
+    // The output should reflect the clean weights without reloading.
+    let weights = array![[4u32]];
+    let activations = array![[1u32]];
+
+    let hook = RegisterHook {
+        target: Index2 { x: 0, y: 0 },
+        register: PeFaultRegister::Weight,
+        bit_index: 0,
+        stuck_at: StuckAt::One,
+    };
+
+    let mut sa = SystolicArray::<u32>::new(1, 1).unwrap().with_hook(hook);
+    sa.set_weights(&weights);
+    assert_eq!(sa.run(&activations), array![[5u32]]);
+
+    let mut sa = sa.with_hook(crate::fault::NoFault);
+    assert_eq!(sa.run(&activations), array![[4u32]]);
+}
+
+#[test]
+fn set_hook_rederives_weights() {
+    // Move a stuck-at fault from y=1 to y=2 via set_hook without reloading
+    // weights. The propagation pattern should shift accordingly.
+    //
+    // 3x1 array, all weights zero, all activations one.
+    // Fault at y=1: output = 0 + 1 + 1 = 2 (y=1 and y=2 corrupted).
+    // Fault at y=2: output = 0 + 0 + 1 = 1 (only y=2 corrupted).
+    let weights = array![[0u32, 0, 0]];
+    let activations = array![[1u32], [1], [1]];
+
+    let hook_at_y1 = RegisterHook {
+        target: Index2 { x: 0, y: 1 },
+        register: PeFaultRegister::Weight,
+        bit_index: 0,
+        stuck_at: StuckAt::One,
+    };
+
+    let mut sa = SystolicArray::<u32>::new(3, 1).expect("valid dimensions").with_hook(hook_at_y1);
+    sa.set_weights(&weights);
+    assert_eq!(sa.run(&activations), array![[2u32]]);
+
+    sa.set_hook(RegisterHook {
+        target: Index2 { x: 0, y: 2 },
+        register: PeFaultRegister::Weight,
+        bit_index: 0,
+        stuck_at: StuckAt::One,
+    });
+    assert_eq!(sa.run(&activations), array![[1u32]]);
+}
+
+#[test]
 fn xor_mask_fault_corrupts_multiply_add() {
     // 1x1 array. The single PE computes 2 * 3 + 0 = 6 cleanly.
     // XOR mask 1 flips bit 0: 6 (0b110) XOR 1 = 7 (0b111).

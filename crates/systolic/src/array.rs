@@ -42,7 +42,11 @@ pub enum CreationError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystolicArray<T, H = NoFault> {
     elements: Array2<ProcessingElement<T>>,
-    pub hook: H,
+    /// Weights as supplied by the caller, before fault corruption. Kept so that
+    /// swapping the hook can re-derive the effective weights without the caller
+    /// needing to reload them.
+    clean_weights: Array2<T>,
+    hook: H,
 }
 
 impl<T: Default + Clone> SystolicArray<T> {
@@ -64,6 +68,7 @@ impl<T: Default + Clone> SystolicArray<T> {
 
         Ok(Self {
             elements: Array2::from_elem((nrows, ncols), ProcessingElement::default()),
+            clean_weights: Array2::from_elem((nrows, ncols), T::default()),
             hook: NoFault,
         })
     }
@@ -87,14 +92,9 @@ impl<T: Default + Clone> SystolicArray<T> {
 }
 
 impl<T, H> SystolicArray<T, H> {
-    /// Replace the fault hook, consuming this array and returning one with the
-    /// new hook installed. The element state (weights, activations, accumulators)
-    /// is preserved.
-    pub fn with_hook<H2>(self, hook: H2) -> SystolicArray<T, H2> {
-        SystolicArray {
-            elements: self.elements,
-            hook,
-        }
+    /// Returns a reference to the active fault hook.
+    pub fn hook(&self) -> &H {
+        &self.hook
     }
 
     /// Returns the number of rows in the array.
@@ -136,6 +136,26 @@ where
     T: Default + Clone,
     H: FaultHook<T>,
 {
+    /// Replace the fault hook, consuming this array and returning one with the
+    /// new hook installed. Effective weights are re-derived from the stored
+    /// clean weights so the new hook is reflected immediately.
+    pub fn with_hook<H2: FaultHook<T>>(self, hook: H2) -> SystolicArray<T, H2> {
+        let mut next = SystolicArray {
+            elements: self.elements,
+            clean_weights: self.clean_weights,
+            hook,
+        };
+        next.derive_weights();
+        next
+    }
+
+    /// Replace the fault hook in place. Effective weights are re-derived from
+    /// the stored clean weights so the new hook is reflected immediately.
+    pub fn set_hook(&mut self, hook: H) {
+        self.hook = hook;
+        self.derive_weights();
+    }
+
     /// Sets the weights of the array. Expects a transposed weight matrix.
     ///
     /// `weights_raw` are assumed to be a matrix with shape `(in_features, out_features)`.
@@ -148,7 +168,11 @@ where
     /// See also: [`Self::set_weights`].
     pub fn set_weights_raw(&mut self, weights_raw: &ArrayRef2<T>) {
         assert_eq!(self.elements.shape(), weights_raw.shape());
+        self.clean_weights = weights_raw.to_owned();
+        self.derive_weights();
+    }
 
+    fn derive_weights(&mut self) {
         let nrows = self.nrows();
         let ncols = self.ncols();
 
@@ -158,7 +182,7 @@ where
                     y: y as Index,
                     x: x as Index,
                 };
-                let mut value = weights_raw[element_index].clone();
+                let mut value = self.clean_weights[element_index].clone();
                 // Each weight shifts down through every register above its
                 // destination, so on_write fires for each intermediate PE.
                 // This lets multiple faults in one column compose correctly
