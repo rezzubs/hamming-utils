@@ -149,15 +149,31 @@ where
     pub fn set_weights_raw(&mut self, weights_raw: &ArrayRef2<T>) {
         assert_eq!(self.elements.shape(), weights_raw.shape());
 
-        for ((y, x), weight) in weights_raw.indexed_iter() {
-            let element_index = Index2 {
-                y: y as Index,
-                x: x as Index,
-            };
-            let weight = self
-                .hook
-                .on_write(element_index, PeFaultRegister::Weight, weight.clone());
-            self.elements[element_index].weight.write(weight);
+        let nrows = self.nrows();
+        let ncols = self.ncols();
+
+        for x in 0..ncols {
+            for y in 0..nrows {
+                let element_index = Index2 {
+                    y: y as Index,
+                    x: x as Index,
+                };
+                let mut value = weights_raw[element_index].clone();
+                // Each weight shifts down through every register above its
+                // destination, so on_write fires for each intermediate PE.
+                // This lets multiple faults in one column compose correctly
+                // and keeps the hook contract uniform for all implementations.
+                for pass_y in 0..=y {
+                    let pass_index = Index2 {
+                        y: pass_y as Index,
+                        x: x as Index,
+                    };
+                    value = self
+                        .hook
+                        .on_write(pass_index, PeFaultRegister::Weight, value);
+                }
+                self.elements[element_index].weight.write(value);
+            }
         }
     }
 

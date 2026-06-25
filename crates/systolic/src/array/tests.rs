@@ -173,7 +173,8 @@ proptest! {
 fn weight_register_fault_corrupts_output() {
     // 2x2 array. PE(y=0, x=0) stores weights[0,0] = 4 (0b100).
     // Stuck-at-one on bit 0 changes 4 → 5 during weight loading.
-    // All other weights are zero so only column 0 is affected.
+    // PE(y=1, x=0) also picks up the fault via pass-through (0 → 1), but
+    // activations[1] = 0 so the corrupted value does not affect the output.
     let weights = array![[4u32, 0], [0, 0]];
     let activations = array![[1u32], [0]];
 
@@ -189,6 +190,35 @@ fn weight_register_fault_corrupts_output() {
     let result = sa.run(&activations);
 
     assert_eq!(result, array![[5u32], [0]]);
+}
+
+#[test]
+fn weight_fault_propagates_to_lower_pes() {
+    // 3x1 array. Fault is at PE(y=1, x=0): bit 0 stuck at one.
+    // All original weights are zero, activations are all one.
+    //
+    // Sequential loading (column x=0):
+    //   y=0: passes through PE(0) only - no fault, stored weight = 0
+    //   y=1: passes through PE(0) then PE(1) - fault fires at PE(1), stored weight = 1
+    //   y=2: passes through PE(0), PE(1), PE(2) - corrupted at PE(1), stored weight = 1
+    //
+    // Output = 0*1 + 1*1 + 1*1 = 2. Without sequential propagation it would
+    // be 1 (only PE(1) directly corrupted, PE(2) would stay 0).
+    let weights = array![[0u32, 0, 0]];
+    let activations = array![[1u32], [1], [1]];
+
+    let hook = RegisterHook {
+        target: Index2 { x: 0, y: 1 },
+        register: PeFaultRegister::Weight,
+        bit_index: 0,
+        stuck_at: StuckAt::One,
+    };
+
+    let mut sa = SystolicArray::<u32>::new(3, 1).expect("valid dimensions").with_hook(hook);
+    sa.set_weights(&weights);
+    let result = sa.run(&activations);
+
+    assert_eq!(result, array![[2u32]]);
 }
 
 #[test]
