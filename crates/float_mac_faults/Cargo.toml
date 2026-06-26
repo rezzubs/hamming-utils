@@ -1,0 +1,16 @@
+[package]
+name = "float_mac_faults"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+ariadne = "0.6.0"
+clap = "4.6.1"
+color-eyre = "0.6.5"
+eframe = "0.34.2"
+egui = "0.34.2"
+egui_plot = "0.35.0"
+eyre = "0.6.12"
+logic_simulation = { path = "../logic_simulation" }
+rand.workspace = true
