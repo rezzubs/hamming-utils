@@ -131,6 +131,7 @@ pub struct App {
 
     run_state: RunState,
     view_mode: ViewMode,
+    show_counts: bool,
 
     bars_to_skip: usize,
     bar_limit: usize,
@@ -175,6 +176,7 @@ impl App {
             bars_to_skip: 0,
             bar_limit: 1,
             view_mode: ViewMode::Patterns,
+            show_counts: false,
         })
     }
 
@@ -229,8 +231,12 @@ impl App {
             .take(self.bar_limit)
             .enumerate()
             .map(|(index, (result, occurences))| {
-                let mut bar =
-                    Bar::new(index as f64, occurences as f64 / total).name(result.to_string());
+                let value = if self.show_counts {
+                    occurences as f64
+                } else {
+                    occurences as f64 / total
+                };
+                let mut bar = Bar::new(index as f64, value).name(result.to_string());
 
                 if result.contains_unknown() {
                     bar = bar.fill(egui::Color32::GREEN);
@@ -268,6 +274,7 @@ impl App {
                 }
             }
             self.step_requested = ui.button("step").clicked();
+            ui.toggle_value(&mut self.show_counts, "Counts");
             if self.view_mode == ViewMode::Patterns {
                 ui.add(
                     egui::Slider::new(&mut self.bars_to_skip, 0..=self.results.len() - 1)
@@ -302,8 +309,12 @@ impl App {
             .into_iter()
             .enumerate()
             .map(|(i, count)| {
-                Bar::new(i as f64, count as f64 / total as f64)
-                    .name(format!("Bit {} - {} times", i, count))
+                let value = if self.show_counts {
+                    count as f64
+                } else {
+                    count as f64 / total as f64
+                };
+                Bar::new(i as f64, value).name(format!("Bit {} - {} times", i, count))
             })
             .collect();
 
