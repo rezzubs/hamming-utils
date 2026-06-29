@@ -71,10 +71,21 @@ impl Space for StuckAt {
 }
 
 /// A stuck-at fault in a specific bit of a PE register.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegisterFault {
     pub stuck_at: StuckAt,
     pub bit_index: u8,
+}
+
+impl RegisterFault {
+    /// Apply this fault to a value by corrupting the target bit.
+    pub fn apply<T: memory::BitBuffer>(&self, mut value: T) -> T {
+        match self.stuck_at {
+            StuckAt::Zero => value.set_0(self.bit_index.into()),
+            StuckAt::One => value.set_1(self.bit_index.into()),
+        }
+        value
+    }
 }
 
 impl Space for RegisterFault {
