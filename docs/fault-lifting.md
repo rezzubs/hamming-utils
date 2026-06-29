@@ -5,7 +5,8 @@ of a hardware register fault in a systolic array without simulating the array
 itself. Instead of running the fault through a cycle-accurate model, we
 translate ("lift") the fault into a small set of operations on the input and
 output matrices of the matrix multiplication. The result is bit-exact for
-integer arithmetic and dramatically faster, especially for batched inputs.
+integer arithmetic and dramatically faster, especially for batched inputs (See
+[Benchmarks](#benchmarks)).
 
 The document starts from the underlying hardware model and builds up to the
 lifting algorithms in stages. No prior familiarity with the codebase is assumed.
@@ -423,3 +424,90 @@ corrected computation.
 
 In all cases the lifted fault produces bit-exact integer results identical to
 running the fault through the array, at a fraction of the cost.
+
+## Benchmarks
+
+The benchmarks below were produced by `crates/systolic/benches/fault_lifting.rs`
+using the `divan` crate. Each `literal` variant simulates the fault cycle-by-cycle
+through the array; each `lifted` variant uses the recipes above. Both paths use
+`f32` matrices. The lifted path uses ndarray's built-in matrix multiplication
+(`matrixmultiply`); no BLAS acceleration is enabled.
+
+### Key takeaways
+
+- **The speedup scales with array size.** A 64×64 array requires simulating 4096
+  PEs per multiplication. At that size, lifted is 600-1600× faster at small batch
+  sizes for weight and accumulator faults.
+- **The speedup is consistent across batch sizes.** Literal simulation repeats
+  per-PE work for every batch item. Lifted amortises the same dense matmul over
+  the entire batch. The ratio does narrow at large batches (both sides grow
+  proportionally), but lifted is never slower.
+- **Multiple passes multiply the advantage.** When the weight matrix is larger
+  than the physical array, the literal path must simulate each pass separately.
+  The multi-pass benchmark (8×8 array, 64×64 weights, 64 passes) shows lifted
+  running a single 64×64 matmul where literal chains 64 separate array simulations
+  - giving a ~56-72× speedup even on a small array.
+- **The floor for the lifted path is one dense matmul.** Even for trivial
+  configurations (8×8, batch 1), lifted takes only a few hundred nanoseconds
+  because the dominant work is a well-optimised matrix multiplication. Literal
+  can never be faster than its per-PE simulation loop.
+
+### Full results
+
+```
+fault_lifting               fastest       │ slowest       │ median        │ mean          │ samples │ iters
+├─ accumulator_fault                      │               │               │               │         │
+│  ├─ lifted                              │               │               │               │         │
+│  │  ├─ arr8x8_batch1      226.6 ns      │ 9.612 µs      │ 239.6 ns      │ 338 ns        │ 100     │ 100
+│  │  ├─ arr8x8_batch64     834.6 ns      │ 2.907 µs      │ 869.1 ns      │ 903.5 ns      │ 100     │ 100
+│  │  ├─ arr8x8_batch256    2.697 µs      │ 9.506 µs      │ 2.721 µs      │ 2.797 µs      │ 100     │ 100
+│  │  ├─ arr64x64_batch1    3.694 µs      │ 48.53 µs      │ 3.79 µs       │ 4.238 µs      │ 100     │ 100
+│  │  ├─ arr64x64_batch64   21.26 µs      │ 45.58 µs      │ 21.48 µs      │ 21.94 µs      │ 100     │ 100
+│  │  ╰─ arr64x64_batch256  48.13 µs      │ 161.6 µs      │ 53.49 µs      │ 58.62 µs      │ 100     │ 100
+│  ╰─ literal                             │               │               │               │         │
+│     ├─ arr8x8_batch1      4.46 µs       │ 9.922 µs      │ 4.585 µs      │ 4.694 µs      │ 100     │ 100
+│     ├─ arr8x8_batch64     20.62 µs      │ 50.38 µs      │ 23.81 µs      │ 24.54 µs      │ 100     │ 100
+│     ├─ arr8x8_batch256    79.24 µs      │ 100.6 µs      │ 80.09 µs      │ 81 µs         │ 100     │ 100
+│     ├─ arr64x64_batch1    2.345 ms      │ 4.127 ms      │ 2.529 ms      │ 2.68 ms       │ 100     │ 100
+│     ├─ arr64x64_batch64   3.912 ms      │ 7.21 ms       │ 4.15 ms       │ 4.67 ms       │ 100     │ 100
+│     ╰─ arr64x64_batch256  8.627 ms      │ 15.38 ms      │ 9.81 ms       │ 10.21 ms      │ 100     │ 100
+├─ activation_fault                       │               │               │               │         │
+│  ├─ lifted                              │               │               │               │         │
+│  │  ├─ arr8x8_batch1      295.6 ns      │ 3.733 µs      │ 305.6 ns      │ 380 ns        │ 100     │ 100
+│  │  ├─ arr8x8_batch64     906.6 ns      │ 3.115 µs      │ 959.6 ns      │ 1.004 µs      │ 100     │ 100
+│  │  ├─ arr8x8_batch256    2.574 µs      │ 4.829 µs      │ 2.623 µs      │ 2.651 µs      │ 100     │ 100
+│  │  ├─ arr64x64_batch1    4.624 µs      │ 9.186 µs      │ 4.739 µs      │ 4.908 µs      │ 100     │ 100
+│  │  ├─ arr64x64_batch64   20.06 µs      │ 55.48 µs      │ 20.27 µs      │ 20.91 µs      │ 100     │ 100
+│  │  ╰─ arr64x64_batch256  130.8 µs      │ 201.6 µs      │ 138 µs        │ 140.4 µs      │ 100     │ 100
+│  ╰─ literal                             │               │               │               │         │
+│     ├─ arr8x8_batch1      8.045 µs      │ 20.83 µs      │ 8.163 µs      │ 8.351 µs      │ 100     │ 100
+│     ├─ arr8x8_batch64     28.22 µs      │ 41.86 µs      │ 31.94 µs      │ 31.8 µs       │ 100     │ 100
+│     ├─ arr8x8_batch256    100.2 µs      │ 116.3 µs      │ 101 µs        │ 101.9 µs      │ 100     │ 100
+│     ├─ arr64x64_batch1    2.879 ms      │ 3.821 ms      │ 2.997 ms      │ 3.022 ms      │ 100     │ 100
+│     ├─ arr64x64_batch64   4.037 ms      │ 4.518 ms      │ 4.207 ms      │ 4.208 ms      │ 100     │ 100
+│     ╰─ arr64x64_batch256  7.229 ms      │ 12.05 ms      │ 7.678 ms      │ 7.748 ms      │ 100     │ 100
+├─ multi_pass                             │               │               │               │         │
+│  ├─ lifted                              │               │               │               │         │
+│  │  ├─ arr8x8_batch1      5.391 µs      │ 12.36 µs      │ 6.013 µs      │ 6.164 µs      │ 100     │ 100
+│  │  ├─ arr8x8_batch64     21.89 µs      │ 29.63 µs      │ 22.06 µs      │ 22.23 µs      │ 100     │ 100
+│  │  ╰─ arr8x8_batch256    90.75 µs      │ 124.4 µs      │ 94.64 µs      │ 96.29 µs      │ 100     │ 100
+│  ╰─ literal                             │               │               │               │         │
+│     ├─ arr8x8_batch1      293.5 µs      │ 364.4 µs      │ 336.3 µs      │ 338 µs        │ 100     │ 100
+│     ├─ arr8x8_batch64     1.567 ms      │ 2.322 ms      │ 1.59 ms       │ 1.655 ms      │ 100     │ 100
+│     ╰─ arr8x8_batch256    5.321 ms      │ 22.76 ms      │ 6.772 ms      │ 8.694 ms      │ 100     │ 100
+╰─ weight_fault                           │               │               │               │         │
+   ├─ lifted                              │               │               │               │         │
+   │  ├─ arr8x8_batch1      223.6 ns      │ 5.223 µs      │ 308.1 ns      │ 358.9 ns      │ 100     │ 100
+   │  ├─ arr8x8_batch64     637.1 ns      │ 9.908 µs      │ 788.8 ns      │ 889.3 ns      │ 100     │ 200
+   │  ├─ arr8x8_batch256    1.82 µs       │ 3.656 µs      │ 2.141 µs      │ 2.17 µs       │ 100     │ 100
+   │  ├─ arr64x64_batch1    3.532 µs      │ 5.122 µs      │ 4.386 µs      │ 4.331 µs      │ 100     │ 100
+   │  ├─ arr64x64_batch64   14.15 µs      │ 232.2 µs      │ 17.76 µs      │ 20.47 µs      │ 100     │ 100
+   │  ╰─ arr64x64_batch256  89.64 µs      │ 173.8 µs      │ 103.6 µs      │ 106 µs        │ 100     │ 100
+   ╰─ literal                             │               │               │               │         │
+      ├─ arr8x8_batch1      9.373 µs      │ 24.64 µs      │ 11.07 µs      │ 11.29 µs      │ 100     │ 100
+      ├─ arr8x8_batch64     45.37 µs      │ 85.98 µs      │ 64.06 µs      │ 63.24 µs      │ 100     │ 100
+      ├─ arr8x8_batch256    171.2 µs      │ 264.9 µs      │ 220.1 µs      │ 219.9 µs      │ 100     │ 100
+      ├─ arr64x64_batch1    4.091 ms      │ 15.55 ms      │ 7.339 ms      │ 7.437 ms      │ 100     │ 100
+      ├─ arr64x64_batch64   8.533 ms      │ 23.33 ms      │ 12.4 ms       │ 12.7 ms       │ 100     │ 100
+      ╰─ arr64x64_batch256  16.85 ms      │ 37.7 ms       │ 17.32 ms      │ 18.43 ms      │ 100     │ 100
+```
