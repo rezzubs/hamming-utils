@@ -1,0 +1,560 @@
+# Systolic-array fault-injection experiment: roadmap
+
+Working reference for the next few weeks of changes. Not permanent documentation.
+Delete or fold into `docs/` once the work lands. Written for future Claude
+sessions: each phase names the concrete files and types involved so a fresh
+session can pick up without re-deriving the design.
+
+## Goal
+
+Add a new experiment to FaultForge that measures neural-network reliability
+under permanent (stuck-at) faults in a weight-stationary systolic array. Two
+fault families:
+
+1. **Register faults** - stuck bits in a PE's weight, activation, or accumulator
+   register. The Rust side (simulation and lifting) is essentially done; the
+   work is the Python experiment, backends, and bindings.
+2. **Logic faults** - faults in a PE's multiply-add logic. Not complete on the
+   Rust side. Two sources: a sampled syndrome distribution (fast) and a full
+   netlist simulation (exact). Added after register faults work end to end.
+
+We run in **float32 (and maybe float16) only**. No integer path is planned.
+Consequence: fault lifting is bit-exact only for integer arithmetic, so on
+floats the lifted and simulated paths will differ in the low bits. We accept
+this; the effect on inference accuracy is expected to be negligible. This is
+why the agreement tooling (below) reports *similarity*, not equality, for the
+float paths.
+
+A third, cross-cutting component: **PE logic-input profiling**. Generating a
+realistic syndrome distribution requires knowing the distribution of logic
+inputs (activation, weight, incoming partial sum) each PE actually sees, which
+depends on both the model (weights and how they map onto the array) and the
+dataset (activations). Profiling is therefore a per-(model, dataset, array)
+precompute that feeds syndrome generation. The data flow is: profile PE inputs
+-> per-PE input distribution -> run the netlist over it -> syndrome distribution
+-> sampled logic faults. It is introduced right after register faults because it
+reuses that infrastructure and reaches down to the array simulator.
+
+Sequence: get the full CLI -> Python -> Rust workflow running for register
+faults first, then add logic faults as purely additive work.
+
+## Reference material
+
+- `docs/library.md` - the experiment framework this plugs into (`Experiment`,
+  `ModelBundle`, `Fingerprint`, `Picker`, stop conditions, save/load).
+- `docs/fault-lifting.md` - the theory behind register lifting. Read before
+  touching any lift code. The three register cases (weight / activation /
+  accumulator) and the "one recipe, every position" accumulator logic are the
+  core.
+- `fit2/` - the prototype. Its structure does not need to survive, but the
+  backend and layer-mapping code is a good reference. Key files:
+  `fit2/python/fit/_internal/backend/{abc,array,torch}.py`,
+  `linear.py`, `conv2d.py`, `model.py`, `experiment.py`.
+- `packages/faultforge/src/faultforge/_internal/experiments/encoded_memory.py`
+  - the one existing built-in experiment. Mirror its shape (results model,
+  fingerprint, golden handling, serialize/deserialize, `_Display`).
+
+## Architectural spine (decided)
+
+These decisions are locked. Do not relitigate them without a reason.
+
+### Fault is decoupled from Backend ("Option 1")
+
+The fault taxonomy and the execution strategy are two independent axes.
+
+- **Fault** = an execution-agnostic description of a single fault in array
+  space. It knows its own enumeration (radix, and how to build itself from a
+  fault id) but nothing about how it will be realized.
+  - `RegisterFault` (target PE, register, bit, stuck value).
+  - `LogicFault.sampled(target, ...)` - a sampled syndrome (later).
+  - `LogicFault.netlist(target, case)` - a netlist case (later).
+- **Backend** = the execution strategy only. Holds array geometry and a
+  per-weight-shape `Mapping` cache. The ABC is `SystolicBackend`, not a generic
+  "matmul backend" (see Conventions and terminology). Two implementations:
+  - `SimulatedBackend` - the **oracle**. Runs the cycle-accurate array via a
+    `FaultHook`. Slow, CPU. Used for validation and cross-checks, not for large
+    campaigns.
+  - `LiftedBackend` - the **workhorse**. Asks Rust for a lifted *description*
+    and applies it with torch ops (GPU, model dtype, amortized over the batch).
+    This is what campaigns actually run on.
+
+The two-axis dispatch (backend strategy x fault kind) is a set of match arms.
+Adding logic later means: one new `Fault` type, one new arm in each backend,
+and (for lifted) one new arm in the torch applier. The register path, the
+backend classes, the experiment, and the CLI are never touched.
+
+**Why not the alternatives.** A fit2-style stateful backend
+(`make_faulty(id)` / `fault_radix()`) cannot express register-vs-logic from an
+id alone, so it collapses into either this design or a per-combination grid. A
+backend-per-(kind x execution) grid duplicates the mapping-cache and
+conversion plumbing and multiplies with every new axis.
+
+### Lifted = "Rust lifts, Torch applies"
+
+Rust computes the lifted *description* (which weights / activation rows /
+accumulator parts are affected); Python applies it in torch. This is the only
+option that keeps the workhorse on GPU and in the model's float dtype and
+amortized over the batch. It requires exposing the lifted structure across the
+binding, not just a Rust matmul. (`fit2`'s `TorchSaBackend` is the reference
+for the torch application; `crates/systolic/src/fault/register_lift.rs`'s
+`LiftedRegisterFault::matmul` is the reference for what each arm must compute,
+ported from ndarray to torch.)
+
+### One experiment, config selects
+
+A single `SystolicFaultInjection` experiment. A config object picks the
+mutually-exclusive fault kind (register / logic) and the sub-choices
+(simulated / lifted; and for logic, sampled / netlist). This maximizes shared
+golden / inference / scoring / serialization code. Register and logic are never
+mixed in one instance.
+
+Rough shape (names are suggestions):
+
+```python
+SystolicFaultInjection(
+    bundle,                       # ModelBundle, reused as-is
+    array=(nrows, ncols),
+    fault=RegisterFaults(registers={Weight, Accumulator}),  # or LogicFaults(...)
+    backend="lifted",             # or "simulated"
+    metric=ReliabilityMetric.Accuracy,
+)
+```
+
+### The oracle / workhorse ladder and agreement tooling
+
+The oracle/workhorse split appears on two independent axes:
+
+- **execution**: `SimulatedBackend` (oracle) vs `LiftedBackend` (workhorse).
+- **logic source**: netlist simulation (oracle) vs sampled distribution
+  (workhorse). The sampled distribution is *generated from* the netlist
+  simulator offline; it is precompute that buys a large runtime speedup.
+
+Because faults are decoupled from backends, the *same* fault set (same picker
+seed / same fault ids) can be replayed through any backend and diffed. That is
+the basis of the agreement tooling (see cross-cutting concerns). Equality is
+only expected for integer arithmetic, which we do not use, so this tooling
+reports similarity and time, not pass/fail. Strict equality stays where the
+math guarantees it: the existing Rust proptests in
+`crates/systolic/src/fault/register_lift.rs`.
+
+## Cross-cutting concerns
+
+These span multiple phases. Design the seams early even where the
+implementation is deferred.
+
+### Reuse from the existing codebase
+
+- `Experiment` base (`_internal/experiment.py`): `run` / `scores` /
+  `serialize` / `deserialize` / `run_loop` / stop conditions. The new
+  experiment subclasses this exactly like `EncodedFaultInjection`.
+- `ModelBundle` (`_internal/loading/`): unchanged. Provides model + dataset +
+  fingerprint.
+- `Fingerprint` (`_internal/fingerprint.py`): the new experiment builds one
+  covering array size, fault config (including the register subset and syndrome
+  model kind), backend, dtype, metric, and the bundle's fingerprint.
+- `Picker` (`faultforge._rust.Picker`): Fisher-Yates sampler over a dense fault
+  radix, resumable via `Picker.from_returned`. This is how the experiment draws
+  faults without replacement; identical pattern to fit2's `Experiment` and to
+  `EncodedFaultInjection._inject_faults`.
+- Layer mapping (`MappedLinear`, `MappedConv2d`, `BackendModel`): ported from
+  fit2 mostly verbatim. Keep the im2col decomposition in `MappedConv2d` and the
+  transpose convention in `MappedLinear` (`backend.matmul(weight, x.T).T`). The
+  mapped layers are the one boundary where PyTorch convention is bridged to the
+  hardware convention; see Conventions and terminology.
+
+### `_internal` + shim convention
+
+All real implementation goes in `packages/faultforge/src/faultforge/_internal/`.
+Public symbols are re-exported from a matching top-level shim
+(see `AGENTS.md` and `faultforge/__init__.py`). Likely new modules:
+`_internal/systolic/` (backends, faults, mapped layers) and
+`_internal/experiments/systolic.py`, with shims `faultforge/systolic.py` and
+`faultforge/experiments/systolic.py`.
+
+### Conventions and terminology: a systolic-array evaluator, not a generic matmul
+
+The backend is not a generic matrix multiply; it is a weight-stationary
+systolic-array evaluation. The distinction is load-bearing: the fault-lifting
+recipes (`docs/fault-lifting.md`) are written in terms of the physical roles - a
+stationary *weight* matrix, streamed *activations*, output rows tied to array
+columns and activation rows to array rows. Renaming to `lhs`/`rhs` would erase
+exactly the semantics the lift depends on. So:
+
+- Keep the parameter names `weights` and `activations` (not `lhs`/`rhs`). They
+  name the weight-stationary roles.
+- Keep the hardware/array convention inside the backend and Rust:
+  `weights (out_features, in_features)`, `activations (in_features, batch)`,
+  result `(out_features, batch)`. This matches the SA simulator and the lift's
+  row/column identities. Do not change the SA convention.
+- Name the abstraction for what it is: `SystolicBackend` (the ABC), not "matmul
+  backend". The method can stay `matmul` (it does compute a product) but its
+  docstring must state the weight-stationary, column-activation convention.
+
+PyTorch convention (row vectors, `y = x @ W.T`) is presented at exactly one
+boundary: the mapped layers. `MappedLinear`/`MappedConv2d` accept and return
+standard PyTorch-shaped tensors and own the transpose to and from the backend
+(fit2 already does `backend.matmul(weight, x.T).T`). So for anyone using
+`BackendModel` the column/row difference is invisible, which is the goal. Do not
+spread the transpose convention beyond the layer boundary.
+
+Optional convenience: if direct callers (tests, the matmul-level agreement tool)
+want a PyTorch-native entry point, add a thin `linear(weight, x)` helper
+mirroring `torch.nn.functional.linear` (`x (batch, in)`, `weight (out, in)`,
+returns `(batch, out)`) that transposes into the core `matmul`. Keep the core in
+hardware convention.
+
+### Register-subset restriction
+
+Sometimes only the weight register is of interest, sometimes two of three,
+usually all three. This is a **fault-space** concern and touches exactly one
+layer: the config -> radix. Do the restriction as a dense re-index in Rust via
+the `Space` context (`crates/systolic/src/id.rs`), not as Python-side reject
+sampling.
+
+- Add an allowed-register set to the fault-space context (extend `ArrayConfig`
+  or wrap it) so `PeRegisterFault`'s `count` / `to_index` / `from_index`
+  (`crates/systolic/src/fault/register.rs`) range over only the chosen
+  registers. This keeps the radix honest and the `Picker`'s without-replacement
+  exhaustion correct.
+- The subset lives in the `RegisterFaults` config and is part of the
+  fingerprint. A weight-only campaign must not resume into an all-registers one.
+- Nothing else changes: not the hook (`RegisterHook`), the lift, the backend,
+  or the mapped layers.
+
+Default: all three registers.
+
+### `SyndromeModel` seam (per-array vs per-PE distributions)
+
+There is a chance the sampled logic distribution must be built per PE (profile
+each PE's logic-input distribution separately) rather than one distribution for
+the whole array. Under the single-stuck-at fault model, only one PE is faulty
+per run and `XorMaskHook` already targets one PE, so this is **not** a hook
+change. It is only a question of *which* distribution you resolve before
+building the fault.
+
+Introduce a `SyndromeModel` with a single method
+`distribution_for(pe) -> Distribution`:
+
+- `PerArraySyndromeModel` ignores `pe` and returns the one global distribution.
+- `PerPeSyndromeModel` indexes a table by PE coordinate.
+
+The hook and the sampled lift consume an already-resolved distribution, so they
+are shared entirely between the two. The only per-PE-specific work is the
+model's storage/lookup and the offline generation mode (Phase 4). Design the
+syndrome file format now with an **optional / broadcastable PE axis** so
+per-array is per-PE with a single broadcast entry.
+
+Both `SyndromeModel` kinds are built from the same per-PE profiling artifact
+(Phase 2): per-array pools all PEs' observations, per-PE keeps them separate. So
+the per-array-vs-per-PE choice is deferred to generation time and does not
+change what profiling records.
+
+Note: the only thing that would force per-PE *into* the hook is multiple
+simultaneous faulty PEs, which the fault model excludes. If that ever changes,
+`XorMaskHook` generalizes to a `target -> distribution` map.
+
+### Agreement and characterization tooling
+
+Not unit tests (except where integer math guarantees equality). A harness that
+replays a shared fault set through multiple backends and reports divergence and
+time. Two granularities:
+
+- **matmul-level**: compare `backend.matmul(w, a)` outputs for one fault on one
+  weight shape. Cheap. Metrics: max abs / relative error, fraction of top-1
+  argmax flips. Doubles as a tolerance-based regression test.
+- **model-level**: run matched fault campaigns (same picker seed) per backend
+  over the dataset, recording per-fault score, an output-divergence metric, and
+  wall-time. Emit a table (reuse the CLI's dataframe/plot pattern in
+  `faultforge_cli/encoded_memory/plots.py`).
+
+First use in Phase 1 (lifted vs simulated register). Reused for every later
+oracle/workhorse pair (sampled vs netlist, sampled-lifted vs sampled-simulated).
+
+### Build reminder
+
+After any Rust change, rebuild the extension before running Python:
+
+```sh
+.venv/bin/maturin develop -m packages/faultforge/pyproject.toml
+```
+
+Otherwise Python imports the stale compiled `faultforge._rust`.
+
+## Phases
+
+### Phase 0: Python foundations (no faults yet)
+
+**Objective.** Port the backend abstraction and layer mapping into FaultForge
+conventions, running a clean (fault-free) matmul, so the model-wrapping
+machinery is proven before faults enter.
+
+- **Python.**
+  - `_internal/systolic/backend.py`: `SystolicBackend` ABC (see Conventions and
+    terminology; not a generic "matmul backend"). Single ABC, everything we need
+    (fit2 split it into `Backend` + `SystolicArrayBackend`; we do not need the
+    split). Methods: `matmul(weights, activations) -> Tensor` (hardware
+    convention), `set_fault(fault: Fault | None) -> None`, `nrows()`, `ncols()`.
+    The fault is set on the backend by the experiment before a forward pass; the
+    mapped layers stay fault-agnostic and just call `matmul`.
+  - A `TorchBackend` (always-correct, `weights @ activations`) for the golden
+    path and as a trivial agreement baseline. (fit2 `backend/torch.py`.)
+  - `_internal/systolic/layers.py`: `MappedLinear`, `MappedConv2d` ported from
+    fit2 `linear.py` / `conv2d.py`. Keep im2col and the transpose convention.
+  - `_internal/systolic/model.py`: `BackendModel` (recursive Linear/Conv2d
+    replacement) from fit2 `model.py`. Drop the `SystolicArrayModel` subclass;
+    fault state lives on the backend, not the model.
+  - Shims: `faultforge/systolic.py` re-exporting the public pieces.
+- **Validation.** `BackendModel(model, TorchBackend())` matches the unwrapped
+  model's forward on a real bundle. This is the matmul-level agreement harness's
+  first customer.
+- **Done when.** A model wrapped with `TorchBackend` reproduces baseline
+  accuracy through the FaultForge experiment scaffolding.
+- **Watch out.** `MappedLinear` asserts 2D input and `MappedConv2d` asserts 4D;
+  keep those. Bias handling differs between the two (see fit2). `nn.Linear.bias`
+  is `None` when `bias=False`.
+
+### Phase 1: Register faults, end to end (the milestone)
+
+**Objective.** Full CLI -> Python -> Rust workflow for register faults, on both
+backends, with the register-subset restriction and the first agreement report.
+
+- **Rust (mostly done; verify and extend).**
+  - Register simulation: `RegisterHook` +
+    `SystolicArray::with_hook` / `matmul` (done,
+    `crates/systolic/src/fault/register.rs`, `array.rs`).
+  - Register lifting: `Mapping::lift_register_fault` ->
+    `LiftedRegisterFault` (done, `fault/register_lift.rs`). Study
+    `LiftedRegisterFaultData` (`Weight` / `Activation` / `Accumulator` with
+    `AccumulatorFaultPart`); the Python torch applier mirrors
+    `LiftedRegisterFault::matmul` arm for arm.
+  - Register-subset restriction: extend the `Space` context so the register set
+    is configurable (see cross-cutting). New work.
+- **Bindings (`crates/bindings/`, all new; nothing systolic is exposed yet).**
+  - Expose `SystolicArray`, `Mapping` / `auto_mapping_for`, and a unified
+    `Fault` py type (register variant to start) constructible from a fault id +
+    fault-space context.
+  - `SimulatedBackend` binding: `matmul(mapping, w, a, fault)` that matches the
+    fault to a hook in Rust and returns the array result (numpy).
+  - Lifted description: `mapping.lift(fault) -> LiftDescription`, a tagged
+    Python object exposing the affected weights / rows / accumulator parts so
+    the torch applier can consume them. Do **not** expose only the Rust matmul.
+  - `fault_radix` over the (possibly restricted) fault space, for the `Picker`.
+  - Update the `.pyi` stubs under
+    `packages/faultforge/src/faultforge/_rust/`.
+- **Python.**
+  - `SimulatedBackend` and `LiftedBackend` implementing the `Backend` ABC.
+    `LiftedBackend.matmul` calls `mapping.lift(fault)` (cached per shape +
+    fault) and applies the description in torch. Reference:
+    fit2 `backend/torch.py` `_faulty_matmul` and the three `_*_fault_matmul`
+    helpers (already a torch port of the Rust arms) and
+    `_TranslationBackendBase` for the per-shape mapping/fault cache.
+  - `_internal/systolic/fault.py`: the Python `Fault` wrapper(s) and the
+    `RegisterFaults` fault-space config (holds the register subset, produces a
+    `_rust.Fault` from an id, reports the radix).
+  - `_internal/experiments/systolic.py`: `SystolicFaultInjection`. Mirror
+    `EncodedFaultInjection`: golden handling, `ReliabilityMetric` reuse
+    (`Accuracy` / `AccuracyDegradation` / `Sdc` / `Top1Sdc`), results pydantic
+    model, `serialize`/`deserialize` with `Fingerprint.raise_if_differs`,
+    `_Display`. Draw faults with `Picker` over the fault radix (use
+    `Picker.from_returned` on resume, like fit2).
+  - Shims + `faultforge/experiments/systolic.py`.
+- **CLI (`packages/faultforge_cli/`).** New `systolic` subpackage mirroring
+  `encoded_memory/` (`commands.py`, `results.py`, `plots.py`); register under
+  the typer app in `main.py`. A `run` command (bundle, array size, register
+  subset, backend, metric, stop conditions, save path) and a `plot`/`compare`
+  command that drives the agreement tooling.
+- **Validation.**
+  - Rust proptests already assert lifted == simulated for integers; keep green.
+  - Agreement tooling: lifted vs simulated on a real model in float. Confirm
+    divergence is negligible (the accepted float non-exactness) and record the
+    time gap (expect the lifted workhorse to be far faster; see the benchmarks
+    in `docs/fault-lifting.md`).
+- **Done when.** `faultforge-cli systolic run ...` completes a register-fault
+  campaign end to end on both backends, the register subset restricts the
+  sampled faults correctly, and the agreement report shows lifted vs simulated
+  agree within tolerance.
+- **Watch out.**
+  - A single physical fault lifts differently per layer (each weight shape has
+    its own `Mapping`), so the effect must be recomputed per shape. Cache keyed
+    by `(weight.shape, fault)`.
+  - Float `RegisterHook` needs a `memory::BitBuffer` impl for f32 (f32 fault
+    application already exists via `list_of_array_fault_f32`; confirm).
+  - The array accumulates down columns in a fixed order, so simulated-float,
+    lifted-float, and plain `w @ a` differ in low bits from float
+    non-associativity. Expected, not a bug.
+
+### Phase 2: PE logic-input profiling
+
+**Objective.** Record, per PE, the distribution of logic-input triples
+(activation, weight, incoming partial sum) that a given model sees over a given
+dataset. This empirical distribution is what the syndrome generator (Phase 4)
+runs the netlist over, so realistic syndromes cannot exist without it. It
+depends on both the model (weights and how they map onto the array) and the
+dataset (activations), so it is a per-(model, dataset, array) precompute and may
+need regenerating per pair if the observed distributions differ significantly.
+Placed here because it reuses Phase 1's infrastructure (SimulatedBackend, mapped
+layers, dataset iteration) and reaches down to the array simulator. Independent
+of Phase 3, so the two can proceed in parallel.
+
+- **Rust.**
+  - A recording hook implementing the existing `FaultHook<T>` trait
+    (`crates/systolic/src/fault/hook.rs`). No new mechanism is needed:
+    `multiply_add(index, activation, weight, partial_sum)` already receives
+    exactly the PE coordinate and the three logic inputs. The hook records the
+    triple keyed by `index`, then returns the correct passthrough
+    `activation * weight + partial_sum`. "Disabled by default" just means not
+    installing it (the array runs `NoFault`); profiling runs the
+    `SimulatedBackend` with the recording hook installed.
+  - Only the simulated array can profile. The lifted backend never materializes
+    per-PE partial sums, so it has nothing to record. Profiling is therefore an
+    oracle-side, SimulatedBackend-only precompute; it is slow, so subsample the
+    dataset.
+  - Data shape (open question, settle here): the key is always the PE
+    coordinate, so the artifact is inherently per-PE. Two candidate value
+    representations:
+    - histogram `PE -> map[triple -> count]`: exact frequencies, but the joint
+      triple space is enormous for f32 and needs quantization/binning. Viable
+      only if the netlist consumes a quantized/fixed-point MAC representation.
+    - reservoir sample `PE -> bounded list[triple]`: a bounded sample of raw
+      observed triples; frequency is captured by sample density; composes with
+      f32 natively; the generator replays the sample through the netlist.
+      Recommended default for floats.
+  - Because the key is the PE coordinate, the same artifact feeds both
+    `SyndromeModel` kinds (per-array pools, per-PE keeps separate). The choice is
+    deferred to generation time (Phase 4), not baked into profiling.
+- **Bindings.** Expose the recording hook and a way to run the SimulatedBackend
+  with it and extract the artifact (a "recording" mode on the backend that
+  accumulates and can dump, or a dedicated `profile(...)` entry point).
+- **Python.** A profiling driver that wraps the model with
+  `BackendModel(model, SimulatedBackend(recording=True))`, runs it over a
+  (subsampled) dataset, and serializes the per-PE artifact. Its identity /
+  fingerprint is (model, dataset, array size), so it can be cached and matched to
+  the generation step. CLI: a `systolic profile` command producing the artifact.
+- **Validation.**
+  - The recording hook is a passthrough: accuracy through the recording backend
+    must equal the clean backend (recording changes nothing but observation).
+  - Coverage: every PE used by the mapping appears in the artifact.
+- **Done when.** `systolic profile` produces a cached, fingerprinted per-PE
+  logic-input artifact for a (model, dataset, array) triple, ready for Phase 4's
+  generator.
+- **Watch out.**
+  - Identity must include the array size, not just model+dataset: the mapping
+    decides which activation/weight/output rows land on which PE, so the same
+    model+dataset on a different array size produces different per-PE inputs.
+  - Only the simulated array can profile; budget for its cost and subsample.
+  - The float joint-triple cardinality drives the histogram-vs-sample choice.
+    This is where the profiling format and the syndrome file format meet; settle
+    both together.
+
+### Phase 3: Logic faults, sampled path (workhorse)
+
+**Objective.** Logic faults end to end on the fast sampled path, validated
+against a synthetic distribution before the real generator exists.
+
+- **Rust.**
+  - Sampled simulation: `XorMaskHook` exists
+    (`crates/systolic/src/fault/random.rs`); wire it into the backend dispatch.
+    Note f32 does not implement `BitXor`; the mask application needs a bitcast
+    to an integer of the same width.
+  - Sampled lift: new, but reuses the accumulator lift structure. A sampled
+    syndrome is an additive error injected at one PE that flows down its column,
+    structurally identical to `LiftedRegisterFaultData::Accumulator`
+    (one output row, propagate down the column). Reuse `AccumulatorFaultPart`'s
+    column-propagation machinery, swapping "corrupt the partial sum" for "add a
+    sampled syndrome". See `lift_accumulator_fault` in `register_lift.rs`.
+- **Python.**
+  - `LogicFault.sampled(target, distribution)` and the `LogicFaults`
+    fault-space config, which holds a `SyndromeModel` (per-array impl first;
+    the seam supports per-PE later). Producing a fault resolves
+    `model.distribution_for(target)` and hands the concrete masks/weights to the
+    `_rust.Fault`, so the hook and lift only ever see a resolved distribution.
+  - New arms in `SimulatedBackend` / `LiftedBackend` dispatch and in the torch
+    applier. Register code untouched.
+  - Syndrome file format with an optional/broadcastable PE axis.
+- **Validation.** Agreement tooling: sampled-lifted vs sampled-simulated should
+  match within float tolerance (both apply the same sampled masks; this is
+  closer to exact than the netlist comparisons). Use a synthetic distribution.
+- **Done when.** A logic (sampled) campaign runs end to end on both backends
+  from the CLI using a synthetic distribution, and lifted vs simulated agree.
+- **Watch out.** Sampling is stochastic (`XorMaskHook` draws from a weighted
+  distribution). For agreement and reproducibility, seed the RNG and keep
+  seeding out of the fault-selection Picker (two independent random sources:
+  which fault, and which syndrome sample).
+
+### Phase 4: Netlist simulator embedding
+
+**Objective.** Fill the netlist path. Unlocks both the real syndrome generator
+(feeds Phase 3) and the netlist simulated oracle.
+
+- **Rust.**
+  - Embed `crates/logic_simulation/` into `SimulatedMulAddHook::multiply_add`,
+    which is currently `todo!()`
+    (`crates/systolic/src/fault/simulated.rs`). The hook runs the PE netlist
+    with a stuck gate for the given `case`.
+  - Determine `sim_cases` for `SimulatedFaultContext` from the loaded netlist
+    (the fault radix for netlist faults is `Index2::count * sim_cases`).
+  - Syndrome generator: an offline routine that consumes the Phase 2 per-PE
+    profiling artifact and runs the netlist over the observed logic inputs (per
+    fault case) to build the sampled syndrome distribution. Per-array aggregation
+    (pool all PEs' observations) first; per-PE (only if needed) is the same
+    routine keyed by PE. Exports into the Phase 3 syndrome file format.
+- **Python.** `LogicFault.netlist(target, case)`; netlist arm in
+  `SimulatedBackend` only for now (the netlist *lift* is Phase 5). A path to
+  export a generated distribution into the Phase 3 file format.
+- **Validation.** Agreement tooling: sampled distribution (workhorse) vs
+  netlist simulation (oracle). This is the measurement that tells us whether
+  the global per-array distribution is accurate enough or whether per-PE is
+  required. If per-PE is needed, implement `PerPeSyndromeModel` and the per-PE
+  generation mode here; the runtime paths do not change (SyndromeModel seam).
+- **Done when.** The netlist simulated oracle runs, real distributions can be
+  generated and consumed by the Phase 3 sampled path, and we have a measured
+  answer on per-array vs per-PE.
+- **Watch out.** The netlist simulator may be much slower than the workhorse
+  version; it is an oracle and a generator, not a campaign workhorse. Do not
+  route large campaigns through it.
+
+### Phase 5: Netlist lift
+
+**Objective.** The remaining arm of the dispatch matrix: lifting a netlist
+logic fault into matrix space.
+
+- **Rust.** The netlist lift depends on the partial sum of the PEs *above* the
+  faulty PE (unlike the sampled lift, which behaves like an accumulator fault).
+  Work out the exact technique against the netlist oracle; the accumulator lift
+  in `register_lift.rs` and its partial-sum computation (`for_activations`
+  range, `slice` + `dot`) is the closest existing machinery.
+- **Python.** Netlist arm in `LiftedBackend` and the torch applier.
+- **Validation.** Agreement tooling vs the netlist simulated oracle from
+  Phase 4.
+- **Done when.** All four logic cells of the dispatch matrix
+  (sampled/netlist x simulated/lifted) exist and agree with their oracles
+  within tolerance.
+
+## Dispatch matrix (target end state)
+
+Fault kind is the row (a `Fault` type); backend is the column. Each cell is one
+match arm. This is the whole surface that grows as features land.
+
+| fault                       | SimulatedBackend (oracle)   | LiftedBackend (workhorse)          |
+|-----------------------------|-----------------------------|------------------------------------|
+| register weight             | `RegisterHook`              | weight lift (done in Rust)         |
+| register activation         | `RegisterHook`              | activation lift (done in Rust)     |
+| register accumulator        | `RegisterHook`              | accumulator lift (done in Rust)    |
+| logic sampled               | `XorMaskHook`               | accumulator-like lift (Phase 3)    |
+| logic netlist               | `SimulatedMulAddHook` (P4)  | partial-sum-dependent lift (P5)    |
+
+## Open questions / deferred
+
+- Profiling data shape: reservoir sample of raw triples (recommended for float)
+  vs quantized histogram. Settle in Phase 2, jointly with the syndrome format
+  since they share the same float-cardinality problem.
+- Exact syndrome file format (PE axis representation, how masks + weights are
+  stored). Settle at the start of Phase 3.
+- Whether per-PE syndrome distributions are actually needed. Answered
+  empirically in Phase 4 by the agreement measurement (sampled vs netlist
+  oracle); do not build `PerPeSyndromeModel` before then, but keep the
+  `SyndromeModel` seam and record per-PE data in Phase 2 so the option is free.
+- The exact netlist lift technique (Phase 5). Deferred until the netlist oracle
+  exists to validate against.
+- Multiple simultaneous faulty PEs. Out of scope. Noted only because it is the
+  one change that would push per-PE distributions into the hook itself.
