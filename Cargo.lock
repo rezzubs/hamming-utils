@@ -3834,18 +3834,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "systolic_copy"
-version = "0.0.0"
-dependencies = [
- "ndarray",
- "num-traits",
- "picker",
- "proptest",
- "rand 0.10.1",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
