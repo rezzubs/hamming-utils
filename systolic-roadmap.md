@@ -288,25 +288,41 @@ Otherwise Python imports the stale compiled `faultforge._rust`.
 conventions, running a clean (fault-free) matmul, so the model-wrapping
 machinery is proven before faults enter.
 
+**Status: done.**
+
 - **Python.**
   - `_internal/systolic/backend.py`: `SystolicBackend` ABC (see Conventions and
     terminology; not a generic "matmul backend"). Single ABC, everything we need
     (fit2 split it into `Backend` + `SystolicArrayBackend`; we do not need the
-    split). Methods: `matmul(weights, activations) -> Tensor` (hardware
-    convention), `set_fault(fault: Fault | None) -> None`, `nrows()`, `ncols()`.
-    The fault is set on the backend by the experiment before a forward pass; the
-    mapped layers stay fault-agnostic and just call `matmul`.
+    split). **Minimal in Phase 0: just `matmul(weights, activations) ->
+    Tensor` (hardware convention).** `set_fault(fault: Fault | None) -> None`,
+    `nrows()`, `ncols()` need a `Fault` type and real array geometry, neither
+    of which exist yet; they're added in Phase 1 alongside `SimulatedBackend`/
+    `LiftedBackend`, the first backends that actually have both. `TorchBackend`
+    (Phase 0's only implementor) has no array geometry or fault concept by
+    design, so it would only ever fake-implement them - same reason fit2 kept
+    `TorchBackend` out of its `SystolicArrayBackend` interface.
   - A `TorchBackend` (always-correct, `weights @ activations`) for the golden
     path and as a trivial agreement baseline. (fit2 `backend/torch.py`.)
   - `_internal/systolic/layers.py`: `MappedLinear`, `MappedConv2d` ported from
     fit2 `linear.py` / `conv2d.py`. Keep im2col and the transpose convention.
+    **`MappedConv2d` restricts to `groups == 1`, raising `ValueError`
+    otherwise** - grouped/depthwise convolutions don't fit the current array
+    model; see the "Grouped/depthwise convolutions" entry under Open
+    questions / deferred.
   - `_internal/systolic/model.py`: `BackendModel` (recursive Linear/Conv2d
     replacement) from fit2 `model.py`. Drop the `SystolicArrayModel` subclass;
-    fault state lives on the backend, not the model.
+    fault state lives on the backend, not the model. Mutates the wrapped model
+    in place, same contract as `EncodedModule` - callers needing an untouched
+    reference must `copy.deepcopy` before wrapping.
   - Shims: `faultforge/systolic.py` re-exporting the public pieces.
 - **Validation.** `BackendModel(model, TorchBackend())` matches the unwrapped
   model's forward on a real bundle. This is the matmul-level agreement harness's
-  first customer.
+  first customer. Property tests in `packages/faultforge/tests/systolic/`;
+  real-bundle accuracy check in `scripts/validate_torch_backend.py` (ResNet20 /
+  CIFAR-10, since it's `groups=1` throughout - MobileNetV2/ShuffleNetV2
+  variants of the `Cifar` bundle aren't usable until grouped convs are
+  supported).
 - **Done when.** A model wrapped with `TorchBackend` reproduces baseline
   accuracy through the FaultForge experiment scaffolding.
 - **Watch out.** `MappedLinear` asserts 2D input and `MappedConv2d` asserts 4D;
@@ -558,3 +574,32 @@ match arm. This is the whole surface that grows as features land.
   exists to validate against.
 - Multiple simultaneous faulty PEs. Out of scope. Noted only because it is the
   one change that would push per-PE distributions into the hook itself.
+- **Grouped/depthwise convolutions (`groups != 1`) don't fit the current
+  array model.** A grouped conv is block-diagonal: `G` independent
+  sub-matmuls (`C_in/G` -> `C_out/G` each), not one dense matmul over all
+  channels - this is a fact about the math, not an implementation gap.
+  `Mapping`/`Pass` (`crates/systolic/src/array/mapping.rs`) only represents
+  one dense, fully-connected block per pass (`Mapping::validate` requires
+  every activation row in a pass to connect to every output row in that
+  pass), so there's currently no way to place several independent sub-blocks
+  in the same array/pass without materializing the full block-diagonal
+  weight matrix - which wastes `G-1` out of every `G` PE cells (nearly the
+  whole array for depthwise, where `G = C_in = C_out`). `MappedConv2d`
+  (Phase 0, `_internal/systolic/layers.py`) restricts to `groups == 1` and
+  raises `ValueError` otherwise; real grouped-conv models in the `Cifar`
+  bundle (MobileNetV2, ShuffleNetV2) are unsupported until this is resolved.
+  Options considered when this was found:
+  1. Loop one `backend.matmul` call per group (correct, but `G` sequential
+     calls per layer - for depthwise that's hundreds of tiny calls per
+     layer, and each call gets more expensive once it crosses into
+     `SimulatedBackend`'s cycle simulation or `LiftedBackend`'s Rust calls
+     in Phase 1, so this compounds badly at campaign scale).
+  2. Materialize the block-diagonal weight matrix and run one dense matmul
+     (correct, wastes most of the array on multiply-by-zero for small
+     groups/depthwise).
+  3. Extend `Mapping`/`Pass` to represent independent sub-blocks sharing
+     array space (the "real" fix, but a genuine array-model design
+     question - bigger than a layer-mapping detail, needs its own
+     discussion).
+  Needs a dedicated design discussion before any grouped-conv model can be
+  validated end to end.
