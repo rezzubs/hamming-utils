@@ -14,6 +14,26 @@ pub struct RandomFault<T> {
     pub entries: Box<[(T, f64)]>,
 }
 
+/// A logic fault hook for one PE: every time that PE computes a
+/// multiply-add, this randomly draws one of `masks` (weighted by
+/// `distribution`) and XORs it into the result, modeling a random bit-level
+/// corruption rather than a fixed stuck-at bit.
+///
+/// Batching multiple examples into one array run, instead of running them
+/// one at a time, doesn't bias which examples get corrupted or how. Every
+/// value passes through a given PE exactly once as it flows through the
+/// array, and the padding cycles added between batched examples produce
+/// results that get discarded before they can reach a real output - they
+/// only spend RNG draws, they don't leak into anything real.
+///
+/// This relies on the hook drawing independently each time, with no memory
+/// of earlier cycles. A fault model whose corruption chance depends on
+/// cycle history wouldn't have this property.
+///
+/// Note: this is about the *distribution* of outcomes, not exact values -
+/// for a fixed seed, batched and unbatched runs consume RNG draws in a
+/// different order and will disagree on the precise corrupted output. That
+/// disagreement is expected.
 pub struct XorMaskHook<T, R> {
     target: Index2,
     masks: Box<[T]>,
@@ -56,8 +76,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{RandomFault, XorMaskHook};
-    use crate::fault::FaultHook;
     use crate::Index2;
+    use crate::fault::FaultHook;
     use rand::SeedableRng;
 
     fn target() -> Index2 {
@@ -69,7 +89,10 @@ mod tests {
     }
 
     fn make_hook(mask: u8) -> XorMaskHook<u8, rand::rngs::StdRng> {
-        let fault = RandomFault { target: target(), entries: Box::from([(mask, 1.0_f64)]) };
+        let fault = RandomFault {
+            target: target(),
+            entries: Box::from([(mask, 1.0_f64)]),
+        };
         XorMaskHook::from_fault(fault, rand::rngs::StdRng::seed_from_u64(0))
             .expect("single positive weight must produce a valid distribution")
     }
