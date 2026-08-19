@@ -11,6 +11,7 @@ name = "_rust"
 [dependencies]
 memory = { path = "../memory", features = ["numpy"] }
 picker = { path = "../picker" }
+systolic = { path = "../systolic" }
 
 numpy.workspace = true
 pyo3.workspace = true

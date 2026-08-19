@@ -7,6 +7,7 @@ mod fault_injection;
 mod mset;
 mod picker;
 mod secded;
+mod systolic;
 
 use pyo3::pymodule;
 
@@ -48,6 +49,30 @@ mod _rust {
         use crate::cep::encode_f32;
         #[pymodule_export]
         use crate::cep::encode_u16;
+    }
+
+    #[pymodule]
+    mod systolic {
+        #[pymodule_export]
+        use crate::systolic::AccumulatorFaultPart;
+        #[pymodule_export]
+        use crate::systolic::ArrayConfig;
+        #[pymodule_export]
+        use crate::systolic::Fault;
+        #[pymodule_export]
+        use crate::systolic::Index2;
+        #[pymodule_export]
+        use crate::systolic::LiftedFault;
+        #[pymodule_export]
+        use crate::systolic::Mapping;
+        #[pymodule_export]
+        use crate::systolic::PeRegisterKind;
+        #[pymodule_export]
+        use crate::systolic::StuckAtKind;
+        #[pymodule_export]
+        use crate::systolic::fault_radix;
+        #[pymodule_export]
+        use crate::systolic::simulated_matmul;
     }
 
     #[pymodule_export]
