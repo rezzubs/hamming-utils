@@ -18,7 +18,11 @@ struct Config {
 
 impl std::fmt::Display for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "arr{}x{}_batch{}", self.array_size, self.array_size, self.batch_size)
+        write!(
+            f,
+            "arr{}x{}_batch{}",
+            self.array_size, self.array_size, self.batch_size
+        )
     }
 }
 
@@ -28,7 +32,10 @@ fn single_pass_configs() -> Vec<Config> {
     [8usize, 64]
         .iter()
         .flat_map(|&array_size| {
-            [1usize, 64, 256].iter().map(move |&batch_size| Config { array_size, batch_size })
+            [1usize, 64, 256].iter().map(move |&batch_size| Config {
+                array_size,
+                batch_size,
+            })
         })
         .collect()
 }
@@ -39,7 +46,10 @@ fn single_pass_configs() -> Vec<Config> {
 fn multi_pass_configs() -> Vec<Config> {
     [1usize, 64, 256]
         .iter()
-        .map(|&batch_size| Config { array_size: 8, batch_size })
+        .map(|&batch_size| Config {
+            array_size: 8,
+            batch_size,
+        })
         .collect()
 }
 
@@ -49,10 +59,16 @@ fn targeted_fault(
     register: PeFaultRegister,
 ) -> TargetedFault<PeRegisterFault> {
     TargetedFault {
-        target: Index2 { x: (ncols / 2) as u16, y: (nrows / 2) as u16 },
+        target: Index2 {
+            x: (ncols / 2) as u16,
+            y: (nrows / 2) as u16,
+        },
         fault: PeRegisterFault {
             register,
-            fault: RegisterFault { stuck_at: StuckAt::One, bit_index: 0 },
+            fault: RegisterFault {
+                stuck_at: StuckAt::One,
+                bit_index: 0,
+            },
         },
     }
 }
@@ -62,12 +78,19 @@ mod weight_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn literal(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let hook = RegisterHook::from_fault(targeted_fault(array_size, array_size, PeFaultRegister::Weight));
+        let hook = RegisterHook::from_fault(targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Weight,
+        ));
 
         bencher
             .with_inputs(|| array.clone().with_hook(hook.clone()))
@@ -78,12 +101,19 @@ mod weight_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn lifted(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let lifted = mapping.lift_register_fault(&targeted_fault(array_size, array_size, PeFaultRegister::Weight));
+        let lifted = mapping.lift_register_fault(&targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Weight,
+        ));
 
         bencher
             .with_inputs(|| (weights.clone(), activations.clone()))
@@ -98,12 +128,19 @@ mod activation_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn literal(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let hook = RegisterHook::from_fault(targeted_fault(array_size, array_size, PeFaultRegister::Activation));
+        let hook = RegisterHook::from_fault(targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Activation,
+        ));
 
         bencher
             .with_inputs(|| array.clone().with_hook(hook.clone()))
@@ -114,12 +151,19 @@ mod activation_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn lifted(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let lifted = mapping.lift_register_fault(&targeted_fault(array_size, array_size, PeFaultRegister::Activation));
+        let lifted = mapping.lift_register_fault(&targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Activation,
+        ));
 
         bencher
             .with_inputs(|| (weights.clone(), activations.clone()))
@@ -134,12 +178,19 @@ mod accumulator_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn literal(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let hook = RegisterHook::from_fault(targeted_fault(array_size, array_size, PeFaultRegister::Accumulator));
+        let hook = RegisterHook::from_fault(targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Accumulator,
+        ));
 
         bencher
             .with_inputs(|| array.clone().with_hook(hook.clone()))
@@ -150,12 +201,19 @@ mod accumulator_fault {
 
     #[divan::bench(args = single_pass_configs())]
     fn lifted(bencher: divan::Bencher, config: Config) {
-        let Config { array_size, batch_size } = config;
+        let Config {
+            array_size,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(array_size, array_size).unwrap();
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let lifted = mapping.lift_register_fault(&targeted_fault(array_size, array_size, PeFaultRegister::Accumulator));
+        let lifted = mapping.lift_register_fault(&targeted_fault(
+            array_size,
+            array_size,
+            PeFaultRegister::Accumulator,
+        ));
 
         bencher
             .with_inputs(|| (weights.clone(), activations.clone()))
@@ -178,12 +236,19 @@ mod multi_pass {
 
     #[divan::bench(args = multi_pass_configs())]
     fn literal(bencher: divan::Bencher, config: Config) {
-        let Config { array_size: _, batch_size } = config;
+        let Config {
+            array_size: _,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(ARRAY_SIZE, ARRAY_SIZE).unwrap();
         let weights = Array2::<f32>::ones((WEIGHT_SIZE, WEIGHT_SIZE));
         let activations = Array2::<f32>::ones((WEIGHT_SIZE, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let hook = RegisterHook::from_fault(targeted_fault(ARRAY_SIZE, ARRAY_SIZE, PeFaultRegister::Accumulator));
+        let hook = RegisterHook::from_fault(targeted_fault(
+            ARRAY_SIZE,
+            ARRAY_SIZE,
+            PeFaultRegister::Accumulator,
+        ));
 
         bencher
             .with_inputs(|| array.clone().with_hook(hook.clone()))
@@ -194,12 +259,19 @@ mod multi_pass {
 
     #[divan::bench(args = multi_pass_configs())]
     fn lifted(bencher: divan::Bencher, config: Config) {
-        let Config { array_size: _, batch_size } = config;
+        let Config {
+            array_size: _,
+            batch_size,
+        } = config;
         let array = SystolicArray::<f32>::new(ARRAY_SIZE, ARRAY_SIZE).unwrap();
         let weights = Array2::<f32>::ones((WEIGHT_SIZE, WEIGHT_SIZE));
         let activations = Array2::<f32>::ones((WEIGHT_SIZE, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let lifted = mapping.lift_register_fault(&targeted_fault(ARRAY_SIZE, ARRAY_SIZE, PeFaultRegister::Accumulator));
+        let lifted = mapping.lift_register_fault(&targeted_fault(
+            ARRAY_SIZE,
+            ARRAY_SIZE,
+            PeFaultRegister::Accumulator,
+        ));
 
         bencher
             .with_inputs(|| (weights.clone(), activations.clone()))

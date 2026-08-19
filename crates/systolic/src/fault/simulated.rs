@@ -1,4 +1,4 @@
-use crate::{Space, Index2, id, mixed_radix};
+use crate::{Index2, Space, mixed_radix, space};
 use std::ops::{Add, Mul};
 
 use super::hook::FaultHook;
@@ -16,7 +16,7 @@ pub struct SimulatedFault {
 /// Context for enumerating [`SimulatedFault`]s.
 #[derive(Clone, Copy)]
 pub struct SimulatedFaultContext {
-    pub array: id::ArrayConfig,
+    pub array: space::ArrayConfig,
     /// Number of distinct fault cases the loaded netlist produces.
     pub sim_cases: u64,
 }
@@ -37,11 +37,9 @@ impl Space for SimulatedFault {
     }
 
     fn from_index(index: u64, context: Self::Context) -> Self {
-        let [target_index, case] = mixed_radix::decode(
-            index,
-            [Index2::count(context.array), context.sim_cases],
-        )
-        .expect("index must be in 0..count");
+        let [target_index, case] =
+            mixed_radix::decode(index, [Index2::count(context.array), context.sim_cases])
+                .expect("index must be in 0..count");
         Self {
             target: Index2::from_index(target_index, context.array),
             case,
@@ -57,7 +55,10 @@ pub struct SimulatedMulAddHook {
 
 impl SimulatedMulAddHook {
     pub fn from_fault(fault: SimulatedFault) -> Self {
-        Self { target: fault.target, case: fault.case }
+        Self {
+            target: fault.target,
+            case: fault.case,
+        }
     }
 }
 

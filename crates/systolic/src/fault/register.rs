@@ -1,4 +1,4 @@
-use crate::{Space, Index2, helper::u64, id, mixed_radix};
+use crate::{Index2, Space, helper::u64, mixed_radix, space, space::AsArrayConfig};
 use memory::BitBuffer;
 
 use super::hook::FaultHook;
@@ -10,29 +10,35 @@ pub struct TargetedFault<T> {
     pub target: Index2,
 }
 
-impl<T: Space<Context = id::ArrayConfig>> Space for TargetedFault<T> {
-    type Context = id::ArrayConfig;
+impl<T: Space> Space for TargetedFault<T>
+where
+    T::Context: AsArrayConfig,
+{
+    type Context = T::Context;
 
-    fn count(context: id::ArrayConfig) -> u64 {
-        Index2::count(context) * T::count(context)
+    fn count(context: T::Context) -> u64 {
+        Index2::count(context.array_config()) * T::count(context)
     }
 
-    fn to_index(&self, context: id::ArrayConfig) -> u64 {
+    fn to_index(&self, context: T::Context) -> u64 {
         mixed_radix::encode(
-            [self.target.to_index(context), self.fault.to_index(context)],
-            [Index2::count(context), T::count(context)],
+            [
+                self.target.to_index(context.array_config()),
+                self.fault.to_index(context),
+            ],
+            [Index2::count(context.array_config()), T::count(context)],
         )
         .expect("TargetedFault components must be within their respective radixes")
     }
 
-    fn from_index(index: u64, context: id::ArrayConfig) -> Self {
+    fn from_index(index: u64, context: T::Context) -> Self {
         let [target_index, fault_index] = mixed_radix::decode(
             index,
-            [Index2::count(context), T::count(context)],
+            [Index2::count(context.array_config()), T::count(context)],
         )
         .expect("index must be in 0..count");
         Self {
-            target: Index2::from_index(target_index, context),
+            target: Index2::from_index(target_index, context.array_config()),
             fault: T::from_index(fault_index, context),
         }
     }
@@ -89,13 +95,13 @@ impl RegisterFault {
 }
 
 impl Space for RegisterFault {
-    type Context = id::ArrayConfig;
+    type Context = space::ArrayConfig;
 
-    fn count(context: id::ArrayConfig) -> u64 {
+    fn count(context: space::ArrayConfig) -> u64 {
         StuckAt::count(()) * u64(context.dtype_bits())
     }
 
-    fn to_index(&self, context: id::ArrayConfig) -> u64 {
+    fn to_index(&self, context: space::ArrayConfig) -> u64 {
         mixed_radix::encode(
             [self.stuck_at.to_index(()), u64(self.bit_index)],
             [StuckAt::count(()), u64(context.dtype_bits())],
@@ -103,12 +109,10 @@ impl Space for RegisterFault {
         .expect("bit_index must be less than dtype_bits")
     }
 
-    fn from_index(index: u64, context: id::ArrayConfig) -> Self {
-        let [stuck_at_index, bit_index] = mixed_radix::decode(
-            index,
-            [StuckAt::count(()), u64(context.dtype_bits())],
-        )
-        .expect("index must be in 0..count");
+    fn from_index(index: u64, context: space::ArrayConfig) -> Self {
+        let [stuck_at_index, bit_index] =
+            mixed_radix::decode(index, [StuckAt::count(()), u64(context.dtype_bits())])
+                .expect("index must be in 0..count");
         Self {
             stuck_at: StuckAt::from_index(stuck_at_index, ()),
             bit_index: bit_index as u8,
@@ -149,6 +153,105 @@ impl Space for PeFaultRegister {
     }
 }
 
+/// A restriction of which [`PeFaultRegister`] variants are eligible for a
+/// fault. Shrinks [`PeRegisterFault`]'s radix to just the registers of
+/// interest via a dense re-index (not reject sampling), so the `Picker`'s
+/// without-replacement exhaustion stays correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegisterSubset {
+    activation: bool,
+    weight: bool,
+    accumulator: bool,
+}
+
+impl RegisterSubset {
+    /// All three registers are eligible.
+    pub const ALL: Self = Self {
+        activation: true,
+        weight: true,
+        accumulator: true,
+    };
+
+    /// Create a new `RegisterSubset` from a sequence of register variants.
+    pub fn new(registers: impl IntoIterator<Item = PeFaultRegister>) -> Self {
+        let mut subset = Self {
+            activation: false,
+            weight: false,
+            accumulator: false,
+        };
+        for register in registers {
+            match register {
+                PeFaultRegister::Activation => subset.activation = true,
+                PeFaultRegister::Weight => subset.weight = true,
+                PeFaultRegister::Accumulator => subset.accumulator = true,
+            }
+        }
+        subset
+    }
+
+    /// Whether `register` is eligible under this subset.
+    ///
+    /// Callers that build a [`PeRegisterFault`]/[`crate::fault::TargetedFault`]
+    /// from data not already known to respect a [`RegisterFaultContext`] (e.g.
+    /// a value crossing an FFI boundary) should check this before indexing,
+    /// since `index_of` panics on a non-member register.
+    pub fn contains(&self, register: &PeFaultRegister) -> bool {
+        match register {
+            PeFaultRegister::Activation => self.activation,
+            PeFaultRegister::Weight => self.weight,
+            PeFaultRegister::Accumulator => self.accumulator,
+        }
+    }
+
+    /// The eligible registers, in a fixed canonical order. This order is what
+    /// makes the dense re-index deterministic and round-trippable.
+    fn ordered(&self) -> impl Iterator<Item = PeFaultRegister> + '_ {
+        [
+            PeFaultRegister::Activation,
+            PeFaultRegister::Weight,
+            PeFaultRegister::Accumulator,
+        ]
+        .into_iter()
+        .filter(move |register| self.contains(register))
+    }
+
+    fn count(&self) -> u64 {
+        self.ordered().count() as u64
+    }
+
+    /// Get the index of `register` within [`Self::ordered`].
+    fn index_of(&self, register: &PeFaultRegister) -> u64 {
+        self.ordered()
+            .position(|candidate| &candidate == register)
+            .expect("register must be a member of the subset") as u64
+    }
+
+    /// Get a corresponding register from the order defined by [`Self::ordered`].
+    fn register_at(&self, index: u64) -> PeFaultRegister {
+        self.ordered()
+            .nth(index as usize)
+            .expect("index must be within the subset's count")
+    }
+}
+
+/// Context for [`PeRegisterFault`]'s [`Space`] impl: the array geometry plus
+/// which registers are eligible for a fault.
+///
+/// Kept separate from [`space::ArrayConfig`] itself so plain array indexing
+/// (used by fault kinds with no register concept, e.g. logic faults) stays
+/// register-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegisterFaultContext {
+    pub array: space::ArrayConfig,
+    pub registers: RegisterSubset,
+}
+
+impl space::AsArrayConfig for RegisterFaultContext {
+    fn array_config(&self) -> space::ArrayConfig {
+        self.array
+    }
+}
+
 /// A stuck-at fault targeting a specific register of a PE.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeRegisterFault {
@@ -157,29 +260,38 @@ pub struct PeRegisterFault {
 }
 
 impl Space for PeRegisterFault {
-    type Context = id::ArrayConfig;
+    type Context = RegisterFaultContext;
 
-    fn count(context: id::ArrayConfig) -> u64 {
-        PeFaultRegister::count(()) * RegisterFault::count(context)
+    fn count(context: RegisterFaultContext) -> u64 {
+        context.registers.count() * RegisterFault::count(context.array)
     }
 
-    fn to_index(&self, context: id::ArrayConfig) -> u64 {
+    fn to_index(&self, context: RegisterFaultContext) -> u64 {
         mixed_radix::encode(
-            [self.register.to_index(()), self.fault.to_index(context)],
-            [PeFaultRegister::count(()), RegisterFault::count(context)],
+            [
+                context.registers.index_of(&self.register),
+                self.fault.to_index(context.array),
+            ],
+            [
+                context.registers.count(),
+                RegisterFault::count(context.array),
+            ],
         )
         .expect("PeRegisterFault components must be within their respective radixes")
     }
 
-    fn from_index(index: u64, context: id::ArrayConfig) -> Self {
+    fn from_index(index: u64, context: RegisterFaultContext) -> Self {
         let [register_index, fault_index] = mixed_radix::decode(
             index,
-            [PeFaultRegister::count(()), RegisterFault::count(context)],
+            [
+                context.registers.count(),
+                RegisterFault::count(context.array),
+            ],
         )
         .expect("index must be in 0..count");
         Self {
-            register: PeFaultRegister::from_index(register_index, ()),
-            fault: RegisterFault::from_index(fault_index, context),
+            register: context.registers.register_at(register_index),
+            fault: RegisterFault::from_index(fault_index, context.array),
         }
     }
 }
@@ -218,14 +330,27 @@ impl<T: BitBuffer> FaultHook<T> for RegisterHook {
 #[cfg(test)]
 mod tests {
     use super::{
-        PeFaultRegister, PeRegisterFault, RegisterFault, RegisterHook, StuckAt, TargetedFault,
+        PeFaultRegister, PeRegisterFault, RegisterFault, RegisterFaultContext, RegisterHook,
+        RegisterSubset, StuckAt, TargetedFault,
     };
-    use crate::fault::FaultHook;
-    use crate::id::{ArrayConfig, Space};
     use crate::Index2;
+    use crate::fault::FaultHook;
+    use crate::space::{ArrayConfig, Space};
 
     fn config(nrows: usize, ncols: usize, dtype_bits: u8) -> ArrayConfig {
         ArrayConfig::new(nrows, ncols, dtype_bits)
+    }
+
+    fn register_context(
+        nrows: usize,
+        ncols: usize,
+        dtype_bits: u8,
+        registers: RegisterSubset,
+    ) -> RegisterFaultContext {
+        RegisterFaultContext {
+            array: config(nrows, ncols, dtype_bits),
+            registers,
+        }
     }
 
     #[test]
@@ -245,7 +370,10 @@ mod tests {
             PeFaultRegister::Weight,
             PeFaultRegister::Accumulator,
         ] {
-            assert_eq!(PeFaultRegister::from_index(variant.to_index(()), ()), variant);
+            assert_eq!(
+                PeFaultRegister::from_index(variant.to_index(()), ()),
+                variant
+            );
         }
         for index in 0..PeFaultRegister::count(()) {
             assert_eq!(PeFaultRegister::from_index(index, ()).to_index(()), index);
@@ -263,7 +391,7 @@ mod tests {
 
     #[test]
     fn pe_register_fault_round_trip() {
-        let context = config(1, 1, 8);
+        let context = register_context(1, 1, 8, RegisterSubset::ALL);
         for index in 0..PeRegisterFault::count(context) {
             let fault = PeRegisterFault::from_index(index, context);
             assert_eq!(fault.to_index(context), index);
@@ -271,10 +399,37 @@ mod tests {
     }
 
     #[test]
+    fn pe_register_fault_round_trip_restricted_subset() {
+        let registers =
+            RegisterSubset::new([PeFaultRegister::Weight, PeFaultRegister::Accumulator]);
+        let context = register_context(1, 1, 8, registers);
+        assert_eq!(
+            PeRegisterFault::count(context),
+            2 * RegisterFault::count(context.array)
+        );
+        for index in 0..PeRegisterFault::count(context) {
+            let fault = PeRegisterFault::from_index(index, context);
+            assert_ne!(fault.register, PeFaultRegister::Activation);
+            assert_eq!(fault.to_index(context), index);
+        }
+    }
+
+    #[test]
     fn targeted_fault_round_trip() {
-        let context = config(2, 2, 4);
+        let context = register_context(2, 2, 4, RegisterSubset::ALL);
         for index in 0..TargetedFault::<PeRegisterFault>::count(context) {
             let fault = TargetedFault::<PeRegisterFault>::from_index(index, context);
+            assert_eq!(fault.to_index(context), index);
+        }
+    }
+
+    #[test]
+    fn targeted_fault_round_trip_restricted_subset() {
+        let registers = RegisterSubset::new([PeFaultRegister::Weight]);
+        let context = register_context(2, 2, 4, registers);
+        for index in 0..TargetedFault::<PeRegisterFault>::count(context) {
+            let fault = TargetedFault::<PeRegisterFault>::from_index(index, context);
+            assert_eq!(fault.fault.register, PeFaultRegister::Weight);
             assert_eq!(fault.to_index(context), index);
         }
     }
@@ -286,38 +441,39 @@ mod tests {
         bit_index: u8,
         stuck_at: StuckAt,
     ) -> RegisterHook {
-        RegisterHook { target: Index2 { x, y }, register, bit_index, stuck_at }
+        RegisterHook {
+            target: Index2 { x, y },
+            register,
+            bit_index,
+            stuck_at,
+        }
     }
 
     #[test]
     fn on_write_stuck_at_zero_clears_bit() {
         let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 =
-            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0xFF);
         assert_eq!(result, 0xFE);
     }
 
     #[test]
     fn on_write_stuck_at_one_sets_bit() {
         let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::One);
-        let result: u8 =
-            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0x00);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0x00);
         assert_eq!(result, 0x01);
     }
 
     #[test]
     fn on_write_non_matching_pe_passes_through() {
         let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 =
-            hook.on_write(Index2 { x: 1, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        let result: u8 = hook.on_write(Index2 { x: 1, y: 0 }, PeFaultRegister::Weight, 0xFF);
         assert_eq!(result, 0xFF);
     }
 
     #[test]
     fn on_write_non_matching_register_passes_through() {
         let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 =
-            hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Activation, 0xFF);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Activation, 0xFF);
         assert_eq!(result, 0xFF);
     }
 }

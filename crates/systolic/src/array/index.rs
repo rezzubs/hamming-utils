@@ -1,6 +1,6 @@
 use crate::helper::u64;
-use crate::id::{ArrayConfig, Space};
 use crate::mixed_radix;
+use crate::space::{ArrayConfig, Space};
 use ndarray::{NdIndex, prelude::*};
 
 /// The type for [`crate::SystolicArray`] dimensions.
@@ -52,7 +52,7 @@ unsafe impl NdIndex<Ix2> for Index2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::Space;
+    use crate::space::Space;
 
     fn config(nrows: usize, ncols: usize) -> ArrayConfig {
         ArrayConfig::new(nrows, ncols, 8)
@@ -72,7 +72,10 @@ mod tests {
         for y in 0..5u16 {
             for x in 0..7u16 {
                 let element_index = Index2 { x, y };
-                assert_eq!(Index2::from_index(element_index.to_index(cfg), cfg), element_index);
+                assert_eq!(
+                    Index2::from_index(element_index.to_index(cfg), cfg),
+                    element_index
+                );
             }
         }
     }

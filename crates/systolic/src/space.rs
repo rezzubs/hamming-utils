@@ -42,7 +42,32 @@ impl ArrayConfig {
     }
 }
 
-/// A finite type that maps bijectively onto a dense prefix of the non-negative integers.
+/// A [`Space::Context`] that can produce the [`ArrayConfig`] it is built on.
+///
+/// Lets [`crate::fault::TargetedFault`] index its [`Index2`](crate::Index2)
+/// component regardless of what additional context a wrapped fault type
+/// needs.
+pub trait AsArrayConfig: Copy {
+    fn array_config(&self) -> ArrayConfig;
+}
+
+impl AsArrayConfig for ArrayConfig {
+    fn array_config(&self) -> ArrayConfig {
+        *self
+    }
+}
+
+/// A finite type that maps bijectively onto a dense prefix of the non-negative
+/// integers.
+///
+/// `Context` holds the parameters of the enumeration itself - e.g. array
+/// geometry, or which register subset is eligible - as opposed to a sampled
+/// value's own data. This split exists because `count` has no `self`: the
+/// size of the space must be knowable before any value has been constructed,
+/// which is what building a `Picker` requires. Consequently `Context` must
+/// be the same for every value produced by one enumeration; embedding it in
+/// the value instead would let two values disagree about which space they
+/// belong to, making an index's meaning ambiguous.
 pub trait Space: Sized {
     type Context: Copy;
 

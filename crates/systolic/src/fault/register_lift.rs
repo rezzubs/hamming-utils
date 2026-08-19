@@ -2,9 +2,9 @@ use std::{collections::HashSet, ops::Range};
 
 use ndarray::prelude::*;
 
+use crate::Index2;
 use crate::Mapping;
 use crate::fault::register::{PeFaultRegister, PeRegisterFault, RegisterFault, TargetedFault};
-use crate::Index2;
 
 /// The accumulated-fault fix-up for one output row in one pass.
 ///
@@ -181,11 +181,7 @@ impl Mapping {
         }
     }
 
-    fn lift_activation_fault(
-        &self,
-        fault: RegisterFault,
-        index: Index2,
-    ) -> LiftedRegisterFault {
+    fn lift_activation_fault(&self, fault: RegisterFault, index: Index2) -> LiftedRegisterFault {
         let mut affected_activation_rows = HashSet::<usize>::new();
         let mut affected_output_rows = HashSet::<usize>::new();
 
@@ -208,11 +204,7 @@ impl Mapping {
         }
     }
 
-    fn lift_accumulator_fault(
-        &self,
-        fault: RegisterFault,
-        index: Index2,
-    ) -> LiftedRegisterFault {
+    fn lift_accumulator_fault(&self, fault: RegisterFault, index: Index2) -> LiftedRegisterFault {
         let mut parts = Vec::new();
 
         for pass in self {
@@ -227,13 +219,15 @@ impl Mapping {
             // range), one below the band sees the whole column, and one inside
             // sees the rows down to it. Clamping handles all three uniformly.
             let used_rows = pass.range_y();
-            let contributing_end =
-                (usize::from(index.y) + 1).clamp(used_rows.start, used_rows.end);
+            let contributing_end = (usize::from(index.y) + 1).clamp(used_rows.start, used_rows.end);
             let contributing_len = contributing_end - used_rows.start;
             let for_activations =
                 pass.activation_rows.start..(pass.activation_rows.start + contributing_len);
 
-            parts.push(AccumulatorFaultPart { affected_output_row, for_activations });
+            parts.push(AccumulatorFaultPart {
+                affected_output_row,
+                for_activations,
+            });
         }
 
         LiftedRegisterFault {
@@ -360,7 +354,10 @@ mod tests {
         let targeted = make_targeted_fault(
             Index2 { x: 0, y: 0 },
             PeFaultRegister::Accumulator,
-            RegisterFault { stuck_at: StuckAt::One, bit_index: 3 },
+            RegisterFault {
+                stuck_at: StuckAt::One,
+                bit_index: 3,
+            },
         );
 
         let lifted = mapping.lift_register_fault(&targeted);

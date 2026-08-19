@@ -214,7 +214,9 @@ fn weight_fault_propagates_to_lower_pes() {
         stuck_at: StuckAt::One,
     };
 
-    let mut sa = SystolicArray::<u32>::new(3, 1).expect("valid dimensions").with_hook(hook);
+    let mut sa = SystolicArray::<u32>::new(3, 1)
+        .expect("valid dimensions")
+        .with_hook(hook);
     sa.set_weights(&weights);
     let result = sa.run(&activations);
 
@@ -261,7 +263,9 @@ fn set_hook_rederives_weights() {
         stuck_at: StuckAt::One,
     };
 
-    let mut sa = SystolicArray::<u32>::new(3, 1).expect("valid dimensions").with_hook(hook_at_y1);
+    let mut sa = SystolicArray::<u32>::new(3, 1)
+        .expect("valid dimensions")
+        .with_hook(hook_at_y1);
     sa.set_weights(&weights);
     assert_eq!(sa.run(&activations), array![[2u32]]);
 

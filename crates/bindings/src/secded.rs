@@ -186,7 +186,11 @@ impl PyEncoding {
         }
 
         let mut encoding = self.to_rust(py)?;
-        encoding.apply_faults(faults.into_iter().map(|(fault, target_bit)| (fault.0, target_bit)));
+        encoding.apply_faults(
+            faults
+                .into_iter()
+                .map(|(fault, target_bit)| (fault.0, target_bit)),
+        );
 
         *self = PyEncoding::from_rust(py, encoding, self.data_bit_count, self.item_counts.clone())?;
 

@@ -208,7 +208,7 @@ hardware convention.
 Sometimes only the weight register is of interest, sometimes two of three,
 usually all three. This is a **fault-space** concern and touches exactly one
 layer: the config -> radix. Do the restriction as a dense re-index in Rust via
-the `Space` context (`crates/systolic/src/id.rs`), not as Python-side reject
+the `Space` context (`crates/systolic/src/space.rs`), not as Python-side reject
 sampling.
 
 - Add an allowed-register set to the fault-space context (extend `ArrayConfig`

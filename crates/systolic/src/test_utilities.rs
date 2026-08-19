@@ -4,10 +4,10 @@ use std::ops::RangeInclusive;
 use ndarray::prelude::*;
 use proptest::prelude::*;
 
+use crate::Index2;
 use crate::array::SystolicArray;
 use crate::fault::RegisterFault;
-use crate::id::{ArrayConfig, Space};
-use crate::Index2;
+use crate::space::{ArrayConfig, Space};
 
 pub const ARR_SIZE: RangeInclusive<usize> = 1..=32;
 pub type ArrItem = u32;
@@ -49,12 +49,10 @@ pub(crate) fn generate_array_with_register_fault()
             let config = ArrayConfig::new(nrows, ncols, ARR_ITEM_BITS_FOR_FAULT);
 
             let index_count = Index2::count(config);
-            let index = (0..index_count)
-                .prop_map(move |i| Index2::from_index(i, config));
+            let index = (0..index_count).prop_map(move |i| Index2::from_index(i, config));
 
             let fault_count = RegisterFault::count(config);
-            let fault = (0..fault_count)
-                .prop_map(move |i| RegisterFault::from_index(i, config));
+            let fault = (0..fault_count).prop_map(move |i| RegisterFault::from_index(i, config));
 
             (Just(array), index, fault)
         })
