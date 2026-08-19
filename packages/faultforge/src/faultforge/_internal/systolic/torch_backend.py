@@ -5,6 +5,7 @@ from typing import final, override
 from torch import Tensor
 
 from faultforge._internal.systolic.backend import SystolicBackend
+from faultforge._rust.systolic import Fault
 
 
 @final
@@ -18,3 +19,15 @@ class TorchBackend(SystolicBackend):
     @override
     def matmul(self, weights: Tensor, activations: Tensor) -> Tensor:
         return weights @ activations
+
+    @override
+    def set_fault(self, fault: Fault | None) -> None:
+        raise NotImplementedError("TorchBackend has no notion of faults")
+
+    @override
+    def nrows(self) -> int:
+        raise NotImplementedError("TorchBackend has no array constraints")
+
+    @override
+    def ncols(self) -> int:
+        raise NotImplementedError("TorchBackend has no array constraints")

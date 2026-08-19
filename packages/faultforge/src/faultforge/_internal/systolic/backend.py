@@ -7,6 +7,8 @@ import abc
 
 from torch import Tensor
 
+from faultforge._rust.systolic import Fault
+
 
 class SystolicBackend(abc.ABC):
     """A weight-stationary systolic-array evaluation strategy.
@@ -23,4 +25,19 @@ class SystolicBackend(abc.ABC):
         `weights` has shape `(out_features, in_features)`, `activations` has
         shape `(in_features, batch)`. Returns `(out_features, batch)`.
         """
+        ...
+
+    @abc.abstractmethod
+    def set_fault(self, fault: Fault | None) -> None:
+        """Set (or clear, with `None`) the fault applied by `matmul`."""
+        ...
+
+    @abc.abstractmethod
+    def nrows(self) -> int:
+        """Return the number of rows in the systolic array."""
+        ...
+
+    @abc.abstractmethod
+    def ncols(self) -> int:
+        """Return the number of columns in the systolic array."""
         ...
