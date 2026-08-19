@@ -94,9 +94,41 @@ class LiftedFault:
     class Accumulator(LiftedFault):
         parts: list[AccumulatorFaultPart]
 
+class Pass:
+    """A single pass through the array.
+
+    Describes which activation rows and output rows are connected, and where
+    they land in the array. `activation_rows`/`output_rows` are `(start, end)`,
+    half-open ranges.
+    """
+
+    activation_rows: tuple[int, int]
+    output_rows: tuple[int, int]
+    array_row_start: int
+    array_col_start: int
+
+    def __init__(
+        self,
+        activation_rows: tuple[int, int],
+        output_rows: tuple[int, int],
+        array_row_start: int = 0,
+        array_col_start: int = 0,
+    ) -> None: ...
+
 class Mapping:
-    """How a matrix multiplication is mapped onto a systolic array. Also the
-    entry point for lifting a register fault to matrix space."""
+    """How a matrix multiplication is mapped onto a systolic array.
+
+    Also the entry point for lifting a register fault to matrix space.
+    """
+
+    @staticmethod
+    def new(passes: list[Pass]) -> Mapping:
+        """Build a mapping from explicit passes.
+
+        Raises `ValueError` if `passes` is empty. Does not itself check that
+        `passes` connects every input row to every output row exactly once -
+        call `validate()` for that.
+        """
 
     @staticmethod
     def auto_for(
@@ -106,9 +138,16 @@ class Mapping:
         `array_nrows x array_ncols` array, splitting into multiple passes if
         the weights don't fit in one."""
 
+    def validate(self) -> None:
+        """Confirm that the mapping is valid for running matrix multiplications.
+
+        Checks that every input row is connected to every output row exactly
+        once and that row-to-array-index assignments are consistent across
+        passes. Raises `ValueError` with the specific problem if not.
+        """
+
     def lift(self, fault: Fault) -> LiftedFault:
-        """Lift a register fault targeting this mapping's array to matrix
-        space."""
+        """Lift a register fault targeting this mapping's array to matrix space."""
 
 def simulated_matmul(
     mapping: Mapping,

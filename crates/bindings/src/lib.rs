@@ -66,6 +66,8 @@ mod _rust {
         #[pymodule_export]
         use crate::systolic::Mapping;
         #[pymodule_export]
+        use crate::systolic::Pass;
+        #[pymodule_export]
         use crate::systolic::PeRegisterKind;
         #[pymodule_export]
         use crate::systolic::StuckAtKind;

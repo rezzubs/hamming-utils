@@ -12,4 +12,4 @@ pub use array::simulated_matmul;
 pub use fault::{Fault, PeRegisterKind, StuckAtKind, fault_radix};
 pub use index::{ArrayConfig, Index2};
 pub use lift::{AccumulatorFaultPart, LiftedFault};
-pub use mapping::Mapping;
+pub use mapping::{Mapping, Pass};
