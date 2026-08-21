@@ -1,13 +1,13 @@
 # Library usage
 
 This is a tutorial-oriented tour of FaultForge's building blocks and how they
-compose. See [`docs/experiments/encoded_memory.md`](experiments/encoded_memory.md)
-for the built-in experiment that ties all of this together, or the
+compose. See [`experiments/encoded_memory`'s README](../experiments/encoded_memory/README.md)
+for the reference experiment that ties all of this together, or the
 `faultforge` package's module docstrings for API-level detail.
 
 ## `ModelBundle`
 
-A [`ModelBundle`](../packages/faultforge/src/faultforge/loading.py) knows how
+A [`ModelBundle`](../src/faultforge/loading.py) knows how
 to load a model together with its evaluation dataset. It's the thing an
 experiment asks for a model and data - it doesn't know anything about
 encoding or fault injection itself.
@@ -27,9 +27,10 @@ To support a new model source, subclass `ModelBundle` and implement:
   loaded (model name, dataset variant, ...), deliberately excluding
   environmental details like device or filesystem paths.
 
-The test suite's `_FakeBundle` (`packages/faultforge/tests/test_encoded_memory.py`)
-is a minimal example: it wraps a plain `nn.Linear` and a random
-`TensorDataset`, useful as a template when writing your own.
+The `encoded_memory` experiment's test suite has a `_FakeBundle`
+(`experiments/encoded_memory/tests/conftest.py`) as a minimal example: it
+wraps a plain `nn.Linear` and a random `TensorDataset`, useful as a template
+when writing your own.
 
 ## `Encoder` / `Encoding`
 
@@ -72,7 +73,7 @@ decoded_model = encoded.decode()  # a copy of `model` with decoded parameters
 
 This is the piece the `encoded_memory` experiment builds its fault injection
 around - see
-[`docs/experiments/encoded_memory.md`](experiments/encoded_memory.md#library-usage).
+[`experiments/encoded_memory`'s README](../experiments/encoded_memory/README.md#library-usage).
 
 ## Fault injection primitives
 
@@ -159,12 +160,12 @@ fails with a precise reason instead of silently mixing incompatible data.
 ## Putting it together
 
 ```python
-from faultforge.encoding import SecdedEncoder
-from faultforge.experiment import MaxRuns, SaveConfig, Stability
-from faultforge.experiments.encoded_memory import (
+from encoded_memory import (
     EncodedFaultInjection,
     ReliabilityMetric,
 )
+from faultforge.encoding import SecdedEncoder
+from faultforge.experiment import MaxRuns, SaveConfig, Stability
 from faultforge.loading import Cifar, CifarDataset, CifarModel
 
 bundle = Cifar(model=CifarModel.ResNet20, dataset=CifarDataset.Cifar10)
@@ -192,7 +193,7 @@ experiment.run_loop(
 )
 ```
 
-`EncodedFaultInjection` is the one built-in `Experiment`, and it's meant to
-be read as a reference for writing your own - see
-[`docs/experiments/encoded_memory.md`](experiments/encoded_memory.md) for how
-it uses everything above.
+`EncodedFaultInjection` is the reference `Experiment` implementation to
+follow when writing your own - see
+[`experiments/encoded_memory`'s README](../experiments/encoded_memory/README.md)
+for how it uses everything above.

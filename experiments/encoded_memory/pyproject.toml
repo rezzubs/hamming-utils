@@ -1,0 +1,32 @@
+[project]
+name = "encoded-memory"
+version = "0.2.1"
+description = "Fault injection into ECC-protected model parameters - a FaultForge experiment, with a CLI for recording and plotting results"
+readme = "README.md"
+authors = [
+    { name = "Marten Roots", email = "marten.roots@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "faultforge==0.2.1",
+    "matplotlib>=3.10.5",
+    "numpy>=2.3.1",
+    "pydantic>=2.12.3",
+    "torch>=2.7.1",
+    "typer>=0.20.0",
+]
+
+[project.scripts]
+encoded-memory = "encoded_memory.main:main"
+
+[project.urls]
+Repository = "https://github.com/rezzubs/faultforge"
+Issues = "https://github.com/rezzubs/faultforge/issues"
+Changelog = "https://github.com/rezzubs/faultforge/blob/main/CHANGELOG.md"
+
+[tool.uv.sources]
+faultforge = { workspace = true }
+
+[build-system]
+requires = ["uv-build>=0.1,<2"]
+build-backend = "uv_build"

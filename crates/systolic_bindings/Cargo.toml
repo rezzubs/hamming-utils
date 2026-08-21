@@ -1,5 +1,5 @@
 [package]
-name = "bindings"
+name = "systolic_bindings"
 edition.workspace = true
 version.workspace = true
 
@@ -9,10 +9,6 @@ crate-type = ["cdylib"]
 name = "_rust"
 
 [dependencies]
-memory = { path = "../memory", features = ["numpy"] }
-picker = { path = "../picker" }
-
+systolic = { path = "../systolic" }
 numpy.workspace = true
 pyo3.workspace = true
-rand.workspace = true
-rayon.workspace = true

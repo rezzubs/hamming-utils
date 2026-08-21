@@ -550,7 +550,6 @@ dependencies = [
  "pyo3",
  "rand 0.10.1",
  "rayon",
- "systolic",
 ]
 
 [[package]]
@@ -3832,6 +3831,15 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "systolic_bindings"
+version = "0.0.0"
+dependencies = [
+ "numpy",
+ "pyo3",
+ "systolic",
 ]
 
 [[package]]

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Experiments live in the repository under `experiments/` as their own packages,
+each pinned to a specific `faultforge` version and installed from a pinned git
+ref rather than published to PyPI. This is meant to keep the library itself
+small and its dependencies minimal regardless of how many experiments accumulate
+over time, while letting an individual experiment stop being actively maintained
+(e.g. once its paper is published) without constraining the design of the
+library.
+
+### Changed
+
+- **Repository layout**: `faultforge`'s Python source now lives directly
+  at the repository root (`src/`, `tests/`) rather than nested under
+  `packages/faultforge`/`faultforge/` - installing from source no longer needs
+  a `#subdirectory=faultforge` suffix. `encoded_memory` (previously bundled
+  into `faultforge` as `faultforge.experiments.encoded_memory`) is now its own
+  package, `experiments/encoded_memory`, pinned to an exact `faultforge` version
+  rather than tracking it. (#30)
+- **`encoded-memory` CLI**: what was `faultforge-cli`'s `faultforge
+  encoded-memory <command>` is now `encoded-memory <command>`, shipped as
+  part of the `experiments/encoded_memory` package instead of a separate
+  `faultforge-cli` package. (#30)
+- **File/loading/dataset helpers moved out of the root namespace**:
+  `DEFAULT_BATCH_SIZE`, `DEFAULT_DEVICE`, `DeviceLike` move to
+  `faultforge.dataset`; `DEFAULT_DTYPE` moves to `faultforge.loading`;
+  `AnyPath`, `is_compressed`, `open_text` move to a new `faultforge.io`. These
+  aren't part of the framework's primary surface (`Experiment`, `Fingerprint`,
+  `ModelBundle`, ...) - just convenience helpers, so they belong next to the
+  module that actually explains them rather than crowding the root namespace.
+  (#30)
+
+### Removed
+
+- **`faultforge-cli`** is no longer published to PyPI or maintained as a
+  separate package - see `encoded-memory` above. (#30)
+
 ## [0.2.1] - 2026-07-08
 
 `0.2.0`'s release pipeline failed to publish `faultforge` and never
