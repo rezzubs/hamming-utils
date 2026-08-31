@@ -413,7 +413,7 @@ def agreement(
     )
 
     picker = Picker(radix)
-    all_results = [
+    all_agreements = [
         compare_matmul(
             (array_rows, array_cols),
             weights,
@@ -423,11 +423,10 @@ def agreement(
         for fault_id in (next(picker) for _ in range(sample_count))
     ]
 
-    for report in summarize(all_results):
+    for report in summarize(all_agreements):
         print(
             f"{report.other} vs {report.baseline} ({report.samples} faults): "
             f"max_abs_error mean={report.mean_max_abs_error:.3e} max={report.max_max_abs_error:.3e}, "
             f"max_relative_error mean={report.mean_max_relative_error:.3e} max={report.max_max_relative_error:.3e}, "
-            f"top1_flip_fraction mean={report.mean_top1_flip_fraction:.4f} max={report.max_top1_flip_fraction:.4f}, "
-            f"mean_seconds={report.mean_seconds:.4e}"
+            f"top1_flip_fraction mean={report.mean_top1_flip_fraction:.4f} max={report.max_top1_flip_fraction:.4f}"
         )

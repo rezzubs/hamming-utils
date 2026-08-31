@@ -1,14 +1,13 @@
 """Matmul-level agreement tooling: run the same fault through every backend
-on one weight shape and report how they compare.
+on one weight shape and report how their outputs compare.
 
 Not a unit test. Equality is only expected for integer arithmetic, so this
-reports similarity and time, not pass/fail; see the roadmap's oracle/workhorse
-ladder and `docs/fault-lifting.md`. Doubles as a tolerance-based regression
-check and is cheap enough to run per fault/shape, unlike a full model-level
+reports similarity, not pass/fail; see the roadmap's oracle/workhorse ladder
+and `docs/fault-lifting.md`. Doubles as a tolerance-based regression check
+and is cheap enough to run per fault/shape, unlike a full model-level
 campaign comparison.
 """
 
-import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -23,11 +22,10 @@ from systolic.torch_backend import TorchBackend
 
 @dataclass(slots=True, frozen=True)
 class BackendResult:
-    """One backend's output and wall time for one matmul call."""
+    """One backend's output for one matmul call."""
 
     name: str
     output: Tensor
-    seconds: float
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,10 +49,8 @@ def _run(
     fault: Fault | None,
 ) -> BackendResult:
     backend.set_fault(fault)
-    start = time.perf_counter()
     output = backend.matmul(weights, activations)
-    seconds = time.perf_counter() - start
-    return BackendResult(name=name, output=output, seconds=seconds)
+    return BackendResult(name=name, output=output)
 
 
 def _compare(baseline: BackendResult, other: BackendResult) -> Agreement:
@@ -96,7 +92,7 @@ def compare_matmul(
     weights: Tensor,
     activations: Tensor,
     fault: Fault | None,
-) -> tuple[list[BackendResult], list[Agreement]]:
+) -> list[Agreement]:
     """Run one matmul through the fault-free golden path plus every systolic
     backend with `fault` applied, and report how each backend-under-test
     (`torch`, `lifted`) agrees with `simulated` (the oracle).
@@ -107,18 +103,13 @@ def compare_matmul(
         BackendResult(
             name="torch",
             output=TorchBackend().matmul(weights, activations),
-            seconds=0.0,
         ),
         _run("simulated", SimulatedBackend(nrows, ncols), weights, activations, fault),
         _run("lifted", LiftedBackend(nrows, ncols), weights, activations, fault),
     ]
 
     oracle = next(result for result in results if result.name == "simulated")
-    agreements = [
-        _compare(oracle, result) for result in results if result is not oracle
-    ]
-
-    return results, agreements
+    return [_compare(oracle, result) for result in results if result is not oracle]
 
 
 @dataclass(slots=True, frozen=True)
@@ -137,44 +128,36 @@ class AgreementSummary:
     max_max_relative_error: float
     mean_top1_flip_fraction: float
     max_top1_flip_fraction: float
-    mean_seconds: float
 
 
-def summarize(
-    samples: Sequence[tuple[list[BackendResult], list[Agreement]]],
-) -> list[AgreementSummary]:
-    """Aggregate `compare_matmul` results from many faults.
+def summarize(samples: Sequence[list[Agreement]]) -> list[AgreementSummary]:
+    """Aggregate `compare_matmul` agreements from many faults.
 
     Returns one `AgreementSummary` per backend-under-test.
     """
-    by_other: dict[str, list[tuple[Agreement, float]]] = defaultdict(list)
+    by_other: dict[str, list[Agreement]] = defaultdict(list)
 
-    for results, agreements in samples:
-        results_by_name = {result.name: result for result in results}
+    for agreements in samples:
         for agreement in agreements:
-            by_other[agreement.other].append(
-                (agreement, results_by_name[agreement.other].seconds)
-            )
+            by_other[agreement.other].append(agreement)
 
     summaries: list[AgreementSummary] = []
-    for other, pairs in by_other.items():
-        abs_errors = [agreement.max_abs_error for agreement, _ in pairs]
-        relative_errors = [agreement.max_relative_error for agreement, _ in pairs]
-        flip_fractions = [agreement.top1_flip_fraction for agreement, _ in pairs]
-        seconds = [seconds for _, seconds in pairs]
+    for other, agreements in by_other.items():
+        abs_errors = [agreement.max_abs_error for agreement in agreements]
+        relative_errors = [agreement.max_relative_error for agreement in agreements]
+        flip_fractions = [agreement.top1_flip_fraction for agreement in agreements]
 
         summaries.append(
             AgreementSummary(
-                baseline=pairs[0][0].baseline,
+                baseline=agreements[0].baseline,
                 other=other,
-                samples=len(pairs),
+                samples=len(agreements),
                 mean_max_abs_error=sum(abs_errors) / len(abs_errors),
                 max_max_abs_error=max(abs_errors),
                 mean_max_relative_error=sum(relative_errors) / len(relative_errors),
                 max_max_relative_error=max(relative_errors),
                 mean_top1_flip_fraction=sum(flip_fractions) / len(flip_fractions),
                 max_top1_flip_fraction=max(flip_fractions),
-                mean_seconds=sum(seconds) / len(seconds),
             )
         )
 
