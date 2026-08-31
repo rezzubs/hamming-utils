@@ -478,12 +478,24 @@ against a synthetic distribution before the real generator exists.
     (`crates/systolic/src/fault/random.rs`); wire it into the backend dispatch.
     Note f32 does not implement `BitXor`; the mask application needs a bitcast
     to an integer of the same width.
-  - Sampled lift: new, but reuses the accumulator lift structure. A sampled
-    syndrome is an additive error injected at one PE that flows down its column,
-    structurally identical to `LiftedRegisterFaultData::Accumulator`
-    (one output row, propagate down the column). Reuse `AccumulatorFaultPart`'s
-    column-propagation machinery, swapping "corrupt the partial sum" for "add a
-    sampled syndrome". See `lift_accumulator_fault` in `register_lift.rs`.
+  - Sampled lift: new, but reuses the accumulator lift structure. A syndrome
+    is an XOR mask (`bits(correct_netlist_output) XOR bits(faulty_netlist_output)`
+    for some observed input triple and fault case - see `XorMaskHook`, not an
+    additive value). The lift still reduces to the accumulator case: at the
+    faulty PE it already computes the correct value `V` the array would
+    produce; apply the sampled mask to get `V' = bits(V) XOR mask`, take
+    `delta = V' - V`, then propagate `delta` down the column exactly like
+    `LiftedRegisterFaultData::Accumulator` does (one output row, propagate down
+    the column) - the column-propagation machinery only needs a delta, it
+    doesn't care that this one is derived from a bit-mask rather than a
+    register stuck-at. Reuse `AccumulatorFaultPart`'s column-propagation
+    machinery, swapping "corrupt the partial sum via stuck-at" for "corrupt it
+    via the sampled XOR mask, then take the delta". See
+    `lift_accumulator_fault` in `register_lift.rs`. An exponent-bit flip can
+    legitimately produce `Inf`/`NaN`, but this needs no special handling here:
+    `agreement.py`'s `_compare` already treats matching `Inf`/`NaN` on both
+    backends as agreement (inherited from register faults, which can saturate
+    the same way).
 - **Python.**
   - `LogicFault.sampled(target, distribution)` and the `LogicFaults`
     fault-space config, which holds a `SyndromeModel` (per-array impl first;
