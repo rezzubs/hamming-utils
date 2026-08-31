@@ -244,7 +244,7 @@ Introduce a `SyndromeModel` with a single method
 
 The hook and the sampled lift consume an already-resolved distribution, so they
 are shared entirely between the two. The only per-PE-specific work is the
-model's storage/lookup and the offline generation mode (Phase 4). Design the
+model's storage/lookup and the offline generation mode (Phase 3). Design the
 syndrome file format now with an **optional / broadcastable PE axis** so
 per-array is per-PE with a single broadcast entry.
 
@@ -256,6 +256,66 @@ change what profiling records.
 Note: the only thing that would force per-PE *into* the hook is multiple
 simultaneous faulty PEs, which the fault model excludes. If that ever changes,
 `XorMaskHook` generalizes to a `target -> distribution` map.
+
+**How "is per-PE actually different" gets answered, not guessed.** Because
+Phase 2 profiling keeps each PE's sample separate rather than merging them
+immediately, and keeps raw values rather than pre-aggregating, this is a real
+statistics question, not intuition. It escalates through three tiers, each
+cheaper and less conclusive than the next:
+
+1. **Input-level, right after Phase 2, no netlist needed.** Compare a given
+   PE's profiled `(activation, weight, partial_sum)` sample against the pooled
+   sample over all PEs (per-marginal Kolmogorov-Smirnov, or a multivariate
+   two-sample test - energy distance / MMD - on the joint triple). Necessary
+   but not sufficient: if inputs are statistically indistinguishable per PE,
+   syndromes must be too (same netlist, same inputs -> same outputs), so
+   pooling is already exactly correct and `PerPeSyndromeModel` buys nothing.
+   If inputs do differ, that doesn't guarantee syndromes will - the netlist
+   could still average the difference out - but it's a real, cheap early
+   signal.
+2. **Syndrome-level, once Phase 3 (syndrome generation) exists.** Because
+   profiling retained raw per-PE samples, Phase 3's generator can produce
+   both a per-PE and a pooled syndrome distribution from the identical
+   underlying data (just choose the aggregation granularity at replay time),
+   and the same two-sample tests apply directly to syndromes instead of
+   inputs. Doesn't need the array-embedded oracle (Phase 5) at all - just the
+   generator. Stronger than tier 1, but still a distributional comparison, not
+   a measurement of whether the difference actually matters for real
+   campaigns.
+3. **Model-level, once Phase 5 (netlist simulated oracle) exists.** Run
+   matched campaigns using a per-array vs a per-PE `SyndromeModel` and compare
+   both against the true netlist oracle via the agreement tooling. This is
+   the real, practical answer: distributions can differ statistically (tier
+   2) without that difference changing accuracy predictions enough to matter.
+
+Retaining per-PE keys and raw (non-aggregated) values in the Phase 2 artifact
+is what makes all three tiers possible after the fact; pooling or aggregating
+during profiling would throw away exactly the information they need.
+
+### Phase 2/3 artifacts: content hash, not a fingerprinted recipe
+
+`Fingerprint`/`raise_if_differs` exists to protect resumable, potentially
+long-running work (`Experiment.run_loop`, `Picker.from_returned`) from
+silently continuing under a drifted configuration. Phase 2 (profiling) and
+Phase 3 (syndrome generation) are one-shot precomputes, not resumable
+multi-step experiments - they don't have the failure mode `Fingerprint` was
+built to catch, so neither gets its own `Fingerprint`. They're just scripts
+that produce a file; caching, if wanted, is a plain deterministic
+output-filename convention, not a `Fingerprint` diff.
+
+Identity only actually matters where it always has: at the fault-injection
+experiment (Phase 4), which *is* resumable. Its `Fingerprint` references the
+syndrome artifact it loaded by a **content hash**, not by the parameters used
+to generate it. This is deliberate and does more work than it looks like: a
+content hash automatically captures the effect of the reservoir cap `K`, the
+dataset-subsampling choice, the generation seed, or even a future
+netlist-version change, without needing any of them tracked as separate
+fingerprint fields - if any of them changes what the artifact actually
+contains, the hash changes too. Nothing about *how* the artifact was produced
+needs to be re-validated by the experiment consuming it, only *what* it
+contains. The exact hashing mechanism (raw file bytes vs. a canonicalized
+representation, to avoid false mismatches from incidental serialization
+non-determinism) is deferred to whenever Phase 4 is actually implemented.
 
 ### Agreement and characterization tooling
 
@@ -409,82 +469,194 @@ backends, with the register-subset restriction and the first agreement report.
 
 **Objective.** Record, per PE, the distribution of logic-input triples
 (activation, weight, incoming partial sum) that a given model sees over a given
-dataset. This empirical distribution is what the syndrome generator (Phase 4)
+dataset. This empirical distribution is what the syndrome generator (Phase 3)
 runs the netlist over, so realistic syndromes cannot exist without it. It
 depends on both the model (weights and how they map onto the array) and the
 dataset (activations), so it is a per-(model, dataset, array) precompute and may
 need regenerating per pair if the observed distributions differ significantly.
 Placed here because it reuses Phase 1's infrastructure (SimulatedBackend, mapped
-layers, dataset iteration) and reaches down to the array simulator. Independent
-of Phase 3, so the two can proceed in parallel.
+layers, dataset iteration) and reaches down to the array simulator. Its output
+feeds directly into Phase 3 (syndrome generation) as a hard dependency - that
+phase cannot start without it. The sampled-path wiring (Phase 4) can still be
+developed in parallel with both, since it only needs *a* distribution in the
+agreed file format to build and unit-test against, not real profiled data.
 
 - **Rust.**
   - A recording hook implementing the existing `FaultHook<T>` trait
     (`crates/systolic/src/fault/hook.rs`). No new mechanism is needed:
     `multiply_add(index, activation, weight, partial_sum)` already receives
-    exactly the PE coordinate and the three logic inputs. The hook records the
-    triple keyed by `index`, then returns the correct passthrough
-    `activation * weight + partial_sum`. "Disabled by default" just means not
-    installing it (the array runs `NoFault`); profiling runs the
-    `SimulatedBackend` with the recording hook installed.
+    exactly the PE coordinate and the three logic inputs. "Disabled by
+    default" just means not installing it (the array runs `NoFault`);
+    profiling runs the `SimulatedBackend` with the recording hook installed.
+  - **The hook must not record unconditionally.** `matmul` (`array.rs`) runs
+    the array at its *full* physical `nrows x ncols` extent on every pass,
+    zero-padding weight/activation outside the pass's active rectangle
+    (`pass.range_y()/range_x()`) - but only reads `pass.range_x()`'s columns
+    back out into the result, discarding the rest. So a PE outside a pass's
+    rectangle still gets `multiply_add` called on it, but that computation
+    provably never reaches any output (confirmed by tracing the exact
+    `matmul` slicing, not by analogy). The same is true one level deeper,
+    per-cycle: `shift_activations`/`unshift_output`'s skewed timing scheme
+    means even an in-rectangle PE spends most cycles on pipeline fill/drain
+    or on other batch elements' wavefronts, and only one specific cycle per
+    batch example is its real, selected contribution (verified by hand-tracing
+    a minimal 2x2 example against the actual code - the "activation hasn't
+    arrived yet" cycles are discarded exactly like rectangle padding is, not
+    included). Recording the discarded cases would contaminate the profile:
+    every such observation behaves as zero output-impact regardless of what a
+    fault would do to it, so it isn't just noise, it systematically
+    overrepresents "this input produces no consequence" versus the genuinely
+    consequential, selected observations. The hook therefore needs both
+    pass-rectangle awareness and per-cycle awareness of which observations are
+    actually selected - exact mechanism (e.g. the profiling driver reconfigures
+    the hook per pass/cycle from outside, since plain `FaultHook::multiply_add`
+    has no notion of "pass" or "selected cycle") is TBD at implementation time.
   - Only the simulated array can profile. The lifted backend never materializes
     per-PE partial sums, so it has nothing to record. Profiling is therefore an
     oracle-side, SimulatedBackend-only precompute; it is slow, so subsample the
-    dataset.
-  - Data shape (open question, settle here): the key is always the PE
-    coordinate, so the artifact is inherently per-PE. Two candidate value
-    representations:
-    - histogram `PE -> map[triple -> count]`: exact frequencies, but the joint
-      triple space is enormous for f32 and needs quantization/binning. Viable
-      only if the netlist consumes a quantized/fixed-point MAC representation.
-    - reservoir sample `PE -> bounded list[triple]`: a bounded sample of raw
-      observed triples; frequency is captured by sample density; composes with
-      f32 natively; the generator replays the sample through the netlist.
-      Recommended default for floats.
+    dataset. Selection should be **uniform random, not stratified**: the Goal
+    is a *realistic* syndrome distribution, meaning it should mirror the real
+    frequency the deployed model sees things at, not an artificially
+    rebalanced view - stratifying by class would work against that. Subsample
+    size is a run parameter like `K`, not a hardcoded constant, and its seed
+    is a local reproducibility knob only (see "content hash, not a
+    fingerprinted recipe").
+  - Data shape (settled): `PE -> bounded reservoir sample of raw triples`, not
+    a histogram. A histogram needs binning to collapse repeats into counts,
+    which only pays off if the input space is small/discrete enough for real
+    collisions to occur; nothing in the codebase quantizes MAC inputs (no
+    `FixedPoint` type anywhere, and the one existing netlist-wiring precedent,
+    `crates/float_mac_faults`, feeds raw `f32::to_bits()` straight into the
+    netlist), and the project is float32-only with no integer path planned
+    (see Goal). So the joint triple space is the full float32^3 space, and a
+    histogram over it degenerates into one bucket per observation - a strictly
+    worse reservoir sample. A bounded uniform reservoir per PE needs no
+    binning, composes with f32 natively, and captures frequency through sample
+    density: commonly-occurring triples are proportionally more likely to be
+    retained, so replaying the sample through the netlist (Phase 3) reproduces
+    a realistic syndrome distribution without evaluating the netlist on every
+    single observation.
   - Because the key is the PE coordinate, the same artifact feeds both
     `SyndromeModel` kinds (per-array pools, per-PE keeps separate). The choice is
-    deferred to generation time (Phase 4), not baked into profiling.
+    deferred to generation time (Phase 3), not baked into profiling.
 - **Bindings.** Expose the recording hook and a way to run the SimulatedBackend
   with it and extract the artifact (a "recording" mode on the backend that
   accumulates and can dump, or a dedicated `profile(...)` entry point).
 - **Python.** A profiling driver that wraps the model with
   `BackendModel(model, SimulatedBackend(recording=True))`, runs it over a
-  (subsampled) dataset, and serializes the per-PE artifact. Its identity /
-  fingerprint is (model, dataset, array size), so it can be cached and matched to
-  the generation step. CLI: a `systolic profile` command producing the artifact.
+  (subsampled) dataset, and serializes the per-PE artifact. CLI: a `systolic
+  profile` command producing the artifact. Profiling is a one-shot precompute,
+  not a resumable multi-step experiment, so it does **not** need its own
+  `Fingerprint`/`raise_if_differs` - that machinery exists specifically to
+  protect `Experiment.run_loop`/`Picker`-style resumable work from silently
+  continuing under a drifted config, which isn't a failure mode a one-shot
+  script has. Caching, if wanted, can be a plain deterministic output-filename
+  convention instead. The reservoir cap per PE (`K`) is a run parameter
+  (CLI-exposed, no hardcoded default baked into the code), not a fixed
+  constant - see the `SyndromeModel` seam and the "content hash, not recipe"
+  note below for why it doesn't need to be tracked anywhere beyond that.
+  Storage format (settled): since `K` is one run parameter, not per-PE
+  adaptive, the whole artifact is a dense array, not a dict of variable-length
+  per-PE lists - `triples: (nrows, ncols, K, 3)` plus `counts: (nrows, ncols)`
+  (a PE won't always reach exactly `K` genuinely-selected observations). Save
+  via plain `numpy.savez_compressed` (`experiments/systolic` already depends
+  on `numpy`; no need for HDF5/Parquet) with a small JSON sidecar for
+  human-facing metadata (model, dataset, array size, `K`, subsample
+  size/seed) - informational only, not used for fingerprinting or caching.
+  `np.savez_compressed` is worth it by default: weight-stationary reuse means
+  a lot of triples share the same weight value, so there's real redundancy,
+  and profiling is already dominated by the array simulation, not I/O.
 - **Validation.**
   - The recording hook is a passthrough: accuracy through the recording backend
     must equal the clean backend (recording changes nothing but observation).
   - Coverage: every PE used by the mapping appears in the artifact.
+  - Per-PE vs pooled divergence (cheap, no netlist needed): compare each PE's
+    input sample against the pooled sample across all PEs (e.g. a
+    Kolmogorov-Smirnov test per marginal, or a multivariate two-sample test -
+    energy distance / MMD - on the joint triple). This is a necessary but not
+    sufficient signal for whether `PerPeSyndromeModel` will matter: if input
+    distributions are statistically indistinguishable per PE, syndrome
+    distributions must match too (same netlist, same inputs), so per-array
+    pooling is already exactly right. If inputs do differ, syndromes might
+    still end up similar (the netlist can average differences out) - the real
+    answer only comes from the syndrome-level comparison in Phase 3. See the
+    `SyndromeModel` seam section for the full three-tier methodology.
 - **Done when.** `systolic profile` produces a cached, fingerprinted per-PE
-  logic-input artifact for a (model, dataset, array) triple, ready for Phase 4's
+  logic-input artifact for a (model, dataset, array) triple, ready for Phase 3's
   generator.
 - **Watch out.**
   - Identity must include the array size, not just model+dataset: the mapping
     decides which activation/weight/output rows land on which PE, so the same
     model+dataset on a different array size produces different per-PE inputs.
   - Only the simulated array can profile; budget for its cost and subsample.
-  - The float joint-triple cardinality drives the histogram-vs-sample choice.
-    This is where the profiling format and the syndrome file format meet; settle
-    both together.
+  - The reservoir cap directly bounds Phase 3's netlist-evaluation cost
+    (`O(PEs x cap x fault_cases)`), so it isn't just a Phase 2 storage
+    decision - pick it with Phase 3's cost in mind.
 
-### Phase 3: Logic faults, sampled path (workhorse)
+### Phase 3: Syndrome generation from sampled inputs
 
-**Objective.** Logic faults end to end on the fast sampled path, validated
-against a synthetic distribution before the real generator exists.
+**Objective.** Turn Phase 2's per-PE profiled inputs into the syndrome
+distribution Phase 4's sampled fault path consumes, by running the netlist
+over them. This needs only the netlist crate and Phase 2's artifact - no
+`SystolicArray`, no `FaultHook`, no array structure involved at all - so it's
+buildable independent of the array-embedded oracle (Phase 5). A real PE
+netlist is available, so there's no need for a synthetic placeholder
+distribution anywhere downstream of this phase.
+
+- **Rust.**
+  - The standalone netlist-evaluation function, built on
+    `crates/logic_simulation`: takes a fault case and an `(activation, weight,
+    partial_sum)` triple, loads the PE netlist, and returns the corrupted
+    output. This is the one real prerequisite for this phase, and the only
+    thing that touches the netlist directly.
+  - A syndrome is an XOR mask:
+    `bits(correct_netlist_output) XOR bits(faulty_netlist_output)`, computed
+    for a specific observed input triple and fault case (see `XorMaskHook`,
+    `crates/systolic/src/fault/random.rs` - not an additive value; Phase 4's
+    lift derives an additive delta from this mask at apply time, but the
+    syndrome itself is the mask).
+  - Syndrome generator: an offline routine that consumes the Phase 2 per-PE
+    profiling artifact and calls the evaluation function above over the
+    observed logic inputs (per fault case) to build the sampled syndrome
+    distribution (mask -> occurrence weight). Per-array aggregation (pool all
+    PEs' observations) first; per-PE (only if needed, see `SyndromeModel`
+    seam) is the same routine keyed by PE. Exports into the syndrome file
+    format Phase 4 consumes.
+- **Python.** A path to export a generated distribution into the syndrome
+  file format; a `systolic generate` (or similar) CLI command that runs
+  generation from a cached Phase 2 artifact.
+- **Validation.** The syndrome-level tier of the `SyndromeModel` seam's
+  three-tier methodology: once both a per-array and a per-PE distribution can
+  be generated from the same profiled inputs, compare them with a two-sample
+  test (energy distance / MMD, or per-mask frequency comparison) to get a
+  stronger-than-input-level signal on whether `PerPeSyndromeModel` is worth
+  building. This doesn't need the array-embedded oracle (Phase 5) - the real,
+  practical answer (does the choice affect campaign accuracy) still waits for
+  Phase 5's model-level agreement tooling.
+- **Done when.** Given a Phase 2 profiling artifact and a real PE netlist, a
+  `systolic` command produces a syndrome file that Phase 4 can load and
+  sample from.
+- **Watch out.** The netlist simulator is expected to be much slower than the
+  array simulator; this is exactly why the Phase 2 reservoir cap matters -
+  generation cost is `O(PEs x reservoir_cap x fault_cases)`, not
+  `O(PEs x dataset_size x fault_cases)`.
+
+### Phase 4: Logic faults, sampled path (workhorse)
+
+**Objective.** Logic faults end to end on the fast sampled path, using the
+real syndrome distribution Phase 3 generates.
 
 - **Rust.**
   - Sampled simulation: `XorMaskHook` exists
     (`crates/systolic/src/fault/random.rs`); wire it into the backend dispatch.
     Note f32 does not implement `BitXor`; the mask application needs a bitcast
     to an integer of the same width.
-  - Sampled lift: new, but reuses the accumulator lift structure. A syndrome
-    is an XOR mask (`bits(correct_netlist_output) XOR bits(faulty_netlist_output)`
-    for some observed input triple and fault case - see `XorMaskHook`, not an
-    additive value). The lift still reduces to the accumulator case: at the
-    faulty PE it already computes the correct value `V` the array would
-    produce; apply the sampled mask to get `V' = bits(V) XOR mask`, take
-    `delta = V' - V`, then propagate `delta` down the column exactly like
+  - Sampled lift: new, but reuses the accumulator lift structure. The syndrome
+    is an XOR mask (see Phase 3 for its definition), not an additive value.
+    The lift still reduces to the accumulator case: at the faulty PE it
+    already computes the correct value `V` the array would produce; apply the
+    sampled mask to get `V' = bits(V) XOR mask`, take `delta = V' - V`, then
+    propagate `delta` down the column exactly like
     `LiftedRegisterFaultData::Accumulator` does (one output row, propagate down
     the column) - the column-propagation machinery only needs a delta, it
     doesn't care that this one is derived from a bit-mask rather than a
@@ -504,50 +676,57 @@ against a synthetic distribution before the real generator exists.
     `_rust.Fault`, so the hook and lift only ever see a resolved distribution.
   - New arms in `SimulatedBackend` / `LiftedBackend` dispatch and in the torch
     applier. Register code untouched.
-  - Syndrome file format with an optional/broadcastable PE axis.
+  - Load the syndrome file format Phase 3 produces (optional/broadcastable PE
+    axis, per the `SyndromeModel` seam).
+  - `SystolicFaultInjection`'s `Fingerprint` includes a content hash of the
+    loaded syndrome artifact (see "Phase 2/3 artifacts: content hash, not a
+    fingerprinted recipe" in Cross-cutting concerns) - this is the one place
+    in the whole logic-fault pipeline where identity is actually tracked.
 - **Validation.** Agreement tooling: sampled-lifted vs sampled-simulated should
   match within float tolerance (both apply the same sampled masks; this is
-  closer to exact than the netlist comparisons). Use a synthetic distribution.
+  closer to exact than the netlist comparisons).
 - **Done when.** A logic (sampled) campaign runs end to end on both backends
-  from the CLI using a synthetic distribution, and lifted vs simulated agree.
+  from the CLI using a real generated distribution, and lifted vs simulated
+  agree.
 - **Watch out.** Sampling is stochastic (`XorMaskHook` draws from a weighted
   distribution). For agreement and reproducibility, seed the RNG and keep
   seeding out of the fault-selection Picker (two independent random sources:
   which fault, and which syndrome sample).
 
-### Phase 4: Netlist simulator embedding
+### Phase 5: Netlist simulated oracle
 
-**Objective.** Fill the netlist path. Unlocks both the real syndrome generator
-(feeds Phase 3) and the netlist simulated oracle.
+**Objective.** Embed the netlist into the array simulator itself, so
+`SimulatedBackend` can run a real model campaign with a genuinely
+gate-accurate fault at one PE - the "logic netlist" oracle in the dispatch
+matrix, and the ground truth for model-level agreement validation against the
+sampled/lifted approximations. Reuses the same netlist-evaluation function
+Phase 3 built, just wired into a different place; **not** a prerequisite for
+Phase 3 or Phase 4, so it can be built in parallel with, or after, either.
 
 - **Rust.**
-  - Embed `crates/logic_simulation/` into `SimulatedMulAddHook::multiply_add`,
-    which is currently `todo!()`
-    (`crates/systolic/src/fault/simulated.rs`). The hook runs the PE netlist
-    with a stuck gate for the given `case`.
+  - Embed the Phase 3 netlist-evaluation function into
+    `SimulatedMulAddHook::multiply_add`, currently `todo!()`
+    (`crates/systolic/src/fault/simulated.rs`), so the hook runs the PE
+    netlist with a stuck gate for the given `case` inside a real cycle-accurate
+    array run.
   - Determine `sim_cases` for `SimulatedFaultContext` from the loaded netlist
     (the fault radix for netlist faults is `Index2::count * sim_cases`).
-  - Syndrome generator: an offline routine that consumes the Phase 2 per-PE
-    profiling artifact and runs the netlist over the observed logic inputs (per
-    fault case) to build the sampled syndrome distribution. Per-array aggregation
-    (pool all PEs' observations) first; per-PE (only if needed) is the same
-    routine keyed by PE. Exports into the Phase 3 syndrome file format.
 - **Python.** `LogicFault.netlist(target, case)`; netlist arm in
-  `SimulatedBackend` only for now (the netlist *lift* is Phase 5). A path to
-  export a generated distribution into the Phase 3 file format.
+  `SimulatedBackend` only for now (the netlist *lift* is Phase 6).
 - **Validation.** Agreement tooling: sampled distribution (workhorse) vs
-  netlist simulation (oracle). This is the measurement that tells us whether
-  the global per-array distribution is accurate enough or whether per-PE is
-  required. If per-PE is needed, implement `PerPeSyndromeModel` and the per-PE
-  generation mode here; the runtime paths do not change (SyndromeModel seam).
-- **Done when.** The netlist simulated oracle runs, real distributions can be
-  generated and consumed by the Phase 3 sampled path, and we have a measured
-  answer on per-array vs per-PE.
+  netlist simulation (oracle), at the model level - the model-level tier of
+  the `SyndromeModel` seam's three-tier methodology, and the ground-truth
+  check that the sampled path (Phases 3-4) is accurate enough. If per-PE is
+  needed, implement `PerPeSyndromeModel` and the per-PE generation mode in
+  Phase 3; the runtime paths do not change (SyndromeModel seam).
+- **Done when.** The netlist simulated oracle runs a real model campaign, and
+  agreement against the sampled path is measured, giving a final answer on
+  per-array vs per-PE.
 - **Watch out.** The netlist simulator may be much slower than the workhorse
-  version; it is an oracle and a generator, not a campaign workhorse. Do not
-  route large campaigns through it.
+  version; it is an oracle, not a campaign workhorse. Do not route large
+  campaigns through it.
 
-### Phase 5: Netlist lift
+### Phase 6: Netlist lift
 
 **Objective.** The remaining arm of the dispatch matrix: lifting a netlist
 logic fault into matrix space.
@@ -559,7 +738,7 @@ logic fault into matrix space.
   range, `slice` + `dot`) is the closest existing machinery.
 - **Python.** Netlist arm in `LiftedBackend` and the torch applier.
 - **Validation.** Agreement tooling vs the netlist simulated oracle from
-  Phase 4.
+  Phase 5.
 - **Done when.** All four logic cells of the dispatch matrix
   (sampled/netlist x simulated/lifted) exist and agree with their oracles
   within tolerance.
@@ -574,21 +753,22 @@ match arm. This is the whole surface that grows as features land.
 | register weight             | `RegisterHook`              | weight lift (done in Rust)         |
 | register activation         | `RegisterHook`              | activation lift (done in Rust)     |
 | register accumulator        | `RegisterHook`              | accumulator lift (done in Rust)    |
-| logic sampled               | `XorMaskHook`               | accumulator-like lift (Phase 3)    |
-| logic netlist               | `SimulatedMulAddHook` (P4)  | partial-sum-dependent lift (P5)    |
+| logic sampled               | `XorMaskHook`               | accumulator-like lift (Phase 4)    |
+| logic netlist               | `SimulatedMulAddHook` (P5)  | partial-sum-dependent lift (P6)    |
 
 ## Open questions / deferred
 
-- Profiling data shape: reservoir sample of raw triples (recommended for float)
-  vs quantized histogram. Settle in Phase 2, jointly with the syndrome format
-  since they share the same float-cardinality problem.
 - Exact syndrome file format (PE axis representation, how masks + weights are
   stored). Settle at the start of Phase 3.
-- Whether per-PE syndrome distributions are actually needed. Answered
-  empirically in Phase 4 by the agreement measurement (sampled vs netlist
-  oracle); do not build `PerPeSyndromeModel` before then, but keep the
-  `SyndromeModel` seam and record per-PE data in Phase 2 so the option is free.
-- The exact netlist lift technique (Phase 5). Deferred until the netlist oracle
+- Whether per-PE syndrome distributions are actually needed. See the
+  `SyndromeModel` seam section for the full three-tier methodology: a cheap
+  early signal from Phase 2 (input distributions, no netlist needed), a
+  stronger signal from Phase 3 (syndrome distributions, no array oracle
+  needed), and the real practical answer from Phase 5's model-level agreement
+  measurement (sampled vs netlist oracle). Do not build `PerPeSyndromeModel`
+  before Phase 5 settles it, but keep the `SyndromeModel` seam and record
+  per-PE data in Phase 2 so the option is free.
+- The exact netlist lift technique (Phase 6). Deferred until the netlist oracle
   exists to validate against.
 - Multiple simultaneous faulty PEs. Out of scope. Noted only because it is the
   one change that would push per-PE distributions into the hook itself.
