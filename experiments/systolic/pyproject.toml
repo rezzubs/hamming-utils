@@ -2,7 +2,6 @@
 name = "systolic"
 version = "0.2.1"
 description = "Systolic-array register-fault injection - a FaultForge experiment"
-readme = "README.md"
 authors = [
     { name = "Marten Roots", email = "marten.roots@gmail.com" }
 ]
@@ -12,6 +11,7 @@ dependencies = [
     "numpy>=2.3.1",
     "pydantic>=2.12.3",
     "torch>=2.7.1",
+    "typer>=0.15",
 ]
 classifiers = [
     "Programming Language :: Rust",
@@ -23,6 +23,9 @@ classifiers = [
 Repository = "https://github.com/rezzubs/faultforge"
 Issues = "https://github.com/rezzubs/faultforge/issues"
 Changelog = "https://github.com/rezzubs/faultforge/blob/main/CHANGELOG.md"
+
+[project.scripts]
+systolic = "systolic.main:main"
 
 [tool.uv.sources]
 faultforge = { workspace = true }
