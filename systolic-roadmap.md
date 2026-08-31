@@ -46,13 +46,9 @@ faults first, then add logic faults as purely additive work.
   touching any lift code. The three register cases (weight / activation /
   accumulator) and the "one recipe, every position" accumulator logic are the
   core.
-- `fit2/` - the prototype. Its structure does not need to survive, but the
-  backend and layer-mapping code is a good reference. Key files:
-  `fit2/python/fit/_internal/backend/{abc,array,torch}.py`,
-  `linear.py`, `conv2d.py`, `model.py`, `experiment.py`.
-- `packages/faultforge/src/faultforge/_internal/experiments/encoded_memory.py`
-  - the one existing built-in experiment. Mirror its shape (results model,
-  fingerprint, golden handling, serialize/deserialize, `_Display`).
+- `experiments/encoded_memory/src/encoded_memory/experiment.py` - the one
+  existing built-in experiment. Mirror its shape (results model, fingerprint,
+  golden handling, serialize/deserialize, `_Display`).
 
 ## Architectural spine (decided)
 
@@ -83,7 +79,7 @@ Adding logic later means: one new `Fault` type, one new arm in each backend,
 and (for lifted) one new arm in the torch applier. The register path, the
 backend classes, the experiment, and the CLI are never touched.
 
-**Why not the alternatives.** A fit2-style stateful backend
+**Why not the alternatives.** A stateful backend design
 (`make_faulty(id)` / `fault_radix()`) cannot express register-vs-logic from an
 id alone, so it collapses into either this design or a per-combination grid. A
 backend-per-(kind x execution) grid duplicates the mapping-cache and
@@ -95,10 +91,10 @@ Rust computes the lifted *description* (which weights / activation rows /
 accumulator parts are affected); Python applies it in torch. This is the only
 option that keeps the workhorse on GPU and in the model's float dtype and
 amortized over the batch. It requires exposing the lifted structure across the
-binding, not just a Rust matmul. (`fit2`'s `TorchSaBackend` is the reference
-for the torch application; `crates/systolic/src/fault/register_lift.rs`'s
-`LiftedRegisterFault::matmul` is the reference for what each arm must compute,
-ported from ndarray to torch.)
+binding, not just a Rust matmul. `crates/systolic/src/fault/register_lift.rs`'s
+`LiftedRegisterFault::matmul` is the reference for what each arm must compute;
+it's already ported to torch in
+`experiments/systolic/src/systolic/lift_apply.py`.
 
 ### One experiment, config selects
 
@@ -144,32 +140,39 @@ implementation is deferred.
 
 ### Reuse from the existing codebase
 
-- `Experiment` base (`_internal/experiment.py`): `run` / `scores` /
-  `serialize` / `deserialize` / `run_loop` / stop conditions. The new
-  experiment subclasses this exactly like `EncodedFaultInjection`.
-- `ModelBundle` (`_internal/loading/`): unchanged. Provides model + dataset +
+- `Experiment` base (`faultforge.experiment`, backed by
+  `src/faultforge/_internal/experiment.py`): `run` / `scores` / `serialize` /
+  `deserialize` / `run_loop` / stop conditions. The new experiment subclasses
+  this exactly like `EncodedFaultInjection`.
+- `ModelBundle` (`faultforge.loading`): unchanged. Provides model + dataset +
   fingerprint.
-- `Fingerprint` (`_internal/fingerprint.py`): the new experiment builds one
+- `Fingerprint` (`faultforge.fingerprint`): the new experiment builds one
   covering array size, fault config (including the register subset and syndrome
   model kind), backend, dtype, metric, and the bundle's fingerprint.
-- `Picker` (`faultforge._rust.Picker`): Fisher-Yates sampler over a dense fault
+- `Picker` (`faultforge.Picker`): Fisher-Yates sampler over a dense fault
   radix, resumable via `Picker.from_returned`. This is how the experiment draws
-  faults without replacement; identical pattern to fit2's `Experiment` and to
+  faults without replacement; identical pattern to
   `EncodedFaultInjection._inject_faults`.
-- Layer mapping (`MappedLinear`, `MappedConv2d`, `BackendModel`): ported from
-  fit2 mostly verbatim. Keep the im2col decomposition in `MappedConv2d` and the
+- Layer mapping (`MappedLinear`, `MappedConv2d`, `BackendModel`): already
+  implemented in `experiments/systolic/src/systolic/layers.py` and
+  `model.py`. Keep the im2col decomposition in `MappedConv2d` and the
   transpose convention in `MappedLinear` (`backend.matmul(weight, x.T).T`). The
   mapped layers are the one boundary where PyTorch convention is bridged to the
   hardware convention; see Conventions and terminology.
 
-### `_internal` + shim convention
+### Package layout: standalone experiment package, not an `_internal` shim
 
-All real implementation goes in `packages/faultforge/src/faultforge/_internal/`.
-Public symbols are re-exported from a matching top-level shim
-(see `AGENTS.md` and `faultforge/__init__.py`). Likely new modules:
-`_internal/systolic/` (backends, faults, mapped layers) and
-`_internal/experiments/systolic.py`, with shims `faultforge/systolic.py` and
-`faultforge/experiments/systolic.py`.
+Originally planned as `_internal/systolic/` plus a `faultforge/systolic.py`
+shim - the convention `faultforge`'s own core modules still use internally
+(see `src/faultforge/_internal/` and `AGENTS.md`). In practice systolic code
+became its own uv workspace member, `experiments/systolic/` (package name
+`systolic`), mirroring `experiments/encoded_memory/`: a flat `src/systolic/`
+with its own `pyproject.toml`, its own Rust extension (`systolic._rust`,
+bound to `crates/systolic_bindings/`), and its own CLI entry point
+(`systolic = "systolic.main:main"`). It depends on `faultforge` as a normal
+dependency rather than living inside it. New Phase 2+ modules go in
+`experiments/systolic/src/systolic/` alongside `backend.py`, `fault.py`,
+`experiment.py`, etc. - no `_internal` subpackage or shim needed there.
 
 ### Conventions and terminology: a systolic-array evaluator, not a generic matmul
 
@@ -191,11 +194,12 @@ exactly the semantics the lift depends on. So:
   docstring must state the weight-stationary, column-activation convention.
 
 PyTorch convention (row vectors, `y = x @ W.T`) is presented at exactly one
-boundary: the mapped layers. `MappedLinear`/`MappedConv2d` accept and return
-standard PyTorch-shaped tensors and own the transpose to and from the backend
-(fit2 already does `backend.matmul(weight, x.T).T`). So for anyone using
-`BackendModel` the column/row difference is invisible, which is the goal. Do not
-spread the transpose convention beyond the layer boundary.
+boundary: the mapped layers. `MappedLinear`/`MappedConv2d`
+(`experiments/systolic/src/systolic/layers.py`) accept and return standard
+PyTorch-shaped tensors and own the transpose to and from the backend
+(`backend.matmul(weight, x.T).T`). So for anyone using `BackendModel` the
+column/row difference is invisible, which is the goal. Do not spread the
+transpose convention beyond the layer boundary.
 
 Optional convenience: if direct callers (tests, the matmul-level agreement tool)
 want a PyTorch-native entry point, add a thin `linear(weight, x)` helper
@@ -272,13 +276,15 @@ oracle/workhorse pair (sampled vs netlist, sampled-lifted vs sampled-simulated).
 
 ### Build reminder
 
-After any Rust change, rebuild the extension before running Python:
+After any Rust change, rebuild the affected extension(s) before running
+Python:
 
 ```sh
-.venv/bin/maturin develop -m packages/faultforge/pyproject.toml
+.venv/bin/maturin develop -m pyproject.toml                          # faultforge._rust
+.venv/bin/maturin develop -m experiments/systolic/pyproject.toml     # systolic._rust
 ```
 
-Otherwise Python imports the stale compiled `faultforge._rust`.
+Otherwise Python imports the stale compiled extension.
 
 ## Phases
 
@@ -291,34 +297,32 @@ machinery is proven before faults enter.
 **Status: done.**
 
 - **Python.**
-  - `_internal/systolic/backend.py`: `SystolicBackend` ABC (see Conventions and
-    terminology; not a generic "matmul backend"). Single ABC, everything we need
-    (fit2 split it into `Backend` + `SystolicArrayBackend`; we do not need the
-    split). **Minimal in Phase 0: just `matmul(weights, activations) ->
-    Tensor` (hardware convention).** `set_fault(fault: Fault | None) -> None`,
-    `nrows()`, `ncols()` need a `Fault` type and real array geometry, neither
-    of which exist yet; they're added in Phase 1 alongside `SimulatedBackend`/
-    `LiftedBackend`, the first backends that actually have both. `TorchBackend`
-    (Phase 0's only implementor) has no array geometry or fault concept by
-    design, so it would only ever fake-implement them - same reason fit2 kept
-    `TorchBackend` out of its `SystolicArrayBackend` interface.
+  - `experiments/systolic/src/systolic/backend.py`: `SystolicBackend` ABC (see
+    Conventions and terminology; not a generic "matmul backend"). Single ABC,
+    everything we need. **Minimal in Phase 0: just `matmul(weights,
+    activations) -> Tensor` (hardware convention).** `set_fault(fault: Fault |
+    None) -> None`, `nrows()`, `ncols()` need a `Fault` type and real array
+    geometry, neither of which exist yet; they're added in Phase 1 alongside
+    `SimulatedBackend`/`LiftedBackend`, the first backends that actually have
+    both. `TorchBackend` (Phase 0's only implementor) has no array geometry or
+    fault concept by design, so it would only ever fake-implement them.
   - A `TorchBackend` (always-correct, `weights @ activations`) for the golden
-    path and as a trivial agreement baseline. (fit2 `backend/torch.py`.)
-  - `_internal/systolic/layers.py`: `MappedLinear`, `MappedConv2d` ported from
-    fit2 `linear.py` / `conv2d.py`. Keep im2col and the transpose convention.
+    path and as a trivial agreement baseline
+    (`experiments/systolic/src/systolic/torch_backend.py`).
+  - `experiments/systolic/src/systolic/layers.py`: `MappedLinear`,
+    `MappedConv2d`. Keep im2col and the transpose convention.
     **`MappedConv2d` restricts to `groups == 1`, raising `ValueError`
     otherwise** - grouped/depthwise convolutions don't fit the current array
     model; see the "Grouped/depthwise convolutions" entry under Open
     questions / deferred.
-  - `_internal/systolic/model.py`: `BackendModel` (recursive Linear/Conv2d
-    replacement) from fit2 `model.py`. Drop the `SystolicArrayModel` subclass;
-    fault state lives on the backend, not the model. Mutates the wrapped model
-    in place, same contract as `EncodedModule` - callers needing an untouched
-    reference must `copy.deepcopy` before wrapping.
-  - Shims: `faultforge/systolic.py` re-exporting the public pieces.
+  - `experiments/systolic/src/systolic/model.py`: `BackendModel` (recursive
+    Linear/Conv2d replacement). Fault state lives on the backend, not the
+    model. Mutates the wrapped model in place, same contract as
+    `EncodedModule` - callers needing an untouched reference must
+    `copy.deepcopy` before wrapping.
 - **Validation.** `BackendModel(model, TorchBackend())` matches the unwrapped
   model's forward on a real bundle. This is the matmul-level agreement harness's
-  first customer. Property tests in `packages/faultforge/tests/systolic/`;
+  first customer. Property tests in `experiments/systolic/tests/`;
   real-bundle accuracy check in `scripts/validate_torch_backend.py` (ResNet20 /
   CIFAR-10, since it's `groups=1` throughout - MobileNetV2/ShuffleNetV2
   variants of the `Cifar` bundle aren't usable until grouped convs are
@@ -326,7 +330,7 @@ machinery is proven before faults enter.
 - **Done when.** A model wrapped with `TorchBackend` reproduces baseline
   accuracy through the FaultForge experiment scaffolding.
 - **Watch out.** `MappedLinear` asserts 2D input and `MappedConv2d` asserts 4D;
-  keep those. Bias handling differs between the two (see fit2). `nn.Linear.bias`
+  keep those. Bias handling differs between the two. `nn.Linear.bias`
   is `None` when `bias=False`.
 
 ### Phase 1: Register faults, end to end (the milestone)
@@ -345,7 +349,8 @@ backends, with the register-subset restriction and the first agreement report.
     `LiftedRegisterFault::matmul` arm for arm.
   - Register-subset restriction: extend the `Space` context so the register set
     is configurable (see cross-cutting). New work.
-- **Bindings (`crates/bindings/`, all new; nothing systolic is exposed yet).**
+- **Bindings (`crates/systolic_bindings/`, exposed to Python as the
+  `systolic._rust` extension - kept separate from `faultforge._rust`).**
   - Expose `SystolicArray`, `Mapping` / `auto_mapping_for`, and a unified
     `Fault` py type (register variant to start) constructible from a fault id +
     fault-space context.
@@ -355,30 +360,31 @@ backends, with the register-subset restriction and the first agreement report.
     Python object exposing the affected weights / rows / accumulator parts so
     the torch applier can consume them. Do **not** expose only the Rust matmul.
   - `fault_radix` over the (possibly restricted) fault space, for the `Picker`.
-  - Update the `.pyi` stubs under
-    `packages/faultforge/src/faultforge/_rust/`.
+  - Update the `.pyi` stub at `experiments/systolic/src/systolic/_rust.pyi`.
 - **Python.**
   - `SimulatedBackend` and `LiftedBackend` implementing the `Backend` ABC.
     `LiftedBackend.matmul` calls `mapping.lift(fault)` (cached per shape +
-    fault) and applies the description in torch. Reference:
-    fit2 `backend/torch.py` `_faulty_matmul` and the three `_*_fault_matmul`
-    helpers (already a torch port of the Rust arms) and
-    `_TranslationBackendBase` for the per-shape mapping/fault cache.
-  - `_internal/systolic/fault.py`: the Python `Fault` wrapper(s) and the
-    `RegisterFaults` fault-space config (holds the register subset, produces a
-    `_rust.Fault` from an id, reports the radix).
-  - `_internal/experiments/systolic.py`: `SystolicFaultInjection`. Mirror
-    `EncodedFaultInjection`: golden handling, `ReliabilityMetric` reuse
-    (`Accuracy` / `AccuracyDegradation` / `Sdc` / `Top1Sdc`), results pydantic
-    model, `serialize`/`deserialize` with `Fingerprint.raise_if_differs`,
-    `_Display`. Draw faults with `Picker` over the fault radix (use
-    `Picker.from_returned` on resume, like fit2).
-  - Shims + `faultforge/experiments/systolic.py`.
-- **CLI (`packages/faultforge_cli/`).** New `systolic` subpackage mirroring
-  `encoded_memory/` (`commands.py`, `results.py`, `plots.py`); register under
-  the typer app in `main.py`. A `run` command (bundle, array size, register
-  subset, backend, metric, stop conditions, save path) and a `plot`/`compare`
-  command that drives the agreement tooling.
+    fault) and applies the description in torch. See
+    `experiments/systolic/src/systolic/lifted_backend.py` and `lift_apply.py`
+    for the per-shape mapping/fault cache and the torch port of the Rust lift
+    arms.
+  - `experiments/systolic/src/systolic/fault.py`: the Python `Fault`
+    wrapper(s) and the `RegisterFaults` fault-space config (holds the register
+    subset, produces a `_rust.Fault` from an id, reports the radix).
+  - `experiments/systolic/src/systolic/experiment.py`:
+    `SystolicFaultInjection`. Mirror `EncodedFaultInjection`: golden handling,
+    `ReliabilityMetric` reuse (`Accuracy` / `AccuracyDegradation` / `Sdc` /
+    `Top1Sdc`), results pydantic model, `serialize`/`deserialize` with
+    `Fingerprint.raise_if_differs`, `_Display`. Draw faults with `Picker` over
+    the fault radix (use `Picker.from_returned` on resume, like
+    `EncodedFaultInjection`).
+- **CLI.** `experiments/systolic/src/systolic/commands.py` mirrors
+  `encoded_memory`'s `commands.py`, with its own `results.py`/`plots.py`
+  equivalents; registered through the `systolic` package's own typer app and
+  entry point (`systolic = "systolic.main:main"`), not a shared CLI package.
+  A `run` command (bundle, array size, register subset, backend, metric, stop
+  conditions, save path) and a `compare` command that drives the agreement
+  tooling (`systolic/agreement.py`).
 - **Validation.**
   - Rust proptests already assert lifted == simulated for integers; keep green.
   - Agreement tooling: lifted vs simulated on a real model in float. Confirm
