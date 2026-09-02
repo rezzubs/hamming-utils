@@ -10,6 +10,7 @@ pub mod array;
 pub mod fault;
 mod helper;
 mod mixed_radix;
+mod reservoir;
 mod space;
 #[cfg(test)]
 pub(crate) mod test_utilities;
