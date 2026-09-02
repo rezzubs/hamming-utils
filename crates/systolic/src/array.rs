@@ -34,6 +34,14 @@ pub enum CreationError {
     TooManyCols(usize),
 }
 
+/// Number of cycles [`SystolicArray::run_shifted`] takes to process an `nrows
+/// x ncols` array over `batch_size` activation columns: the top-left activation
+/// needs `ncols + nrows - 1` steps to reach the bottom-right element, plus one
+/// more cycle for every batch column after the first.
+pub(crate) fn cycle_count(nrows: usize, ncols: usize, batch_size: usize) -> usize {
+    (ncols + nrows - 1) + batch_size - 1
+}
+
 /// A simulator for a systolic array.
 ///
 /// `H` is the fault hook applied to every register write and multiply-add in
@@ -241,13 +249,8 @@ where
         assert_eq!(self.nrows(), row_shifted_activations.nrows());
         assert!(row_shifted_activations.nrows() <= row_shifted_activations.ncols());
 
-        // The number of steps the top activation has to take to reach the
-        // bottom right PE.
-        let longest_path_through_array = self.ncols() + self.nrows() - 1;
         let batches_count = row_shifted_activations.ncols() - row_shifted_activations.nrows() + 1;
-        // how many iterations we have to evaluate the array to produce the full
-        // output. 1 extra step for every batch after the first
-        let cycle_count = longest_path_through_array + batches_count - 1;
+        let cycle_count = cycle_count(self.nrows(), self.ncols(), batches_count);
 
         // The cycle index at which the first output element appears.
         let output_start_cycle = self.nrows() - 1;
