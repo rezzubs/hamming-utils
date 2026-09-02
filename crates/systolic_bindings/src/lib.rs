@@ -12,6 +12,7 @@ mod fault;
 mod index;
 mod lift;
 mod mapping;
+mod profile;
 
 use pyo3::pymodule;
 
@@ -39,4 +40,8 @@ mod _rust {
     use crate::mapping::Mapping;
     #[pymodule_export]
     use crate::mapping::Pass;
+    #[pymodule_export]
+    use crate::profile::Profiler;
+    #[pymodule_export]
+    use crate::profile::ProfilingArtifact;
 }

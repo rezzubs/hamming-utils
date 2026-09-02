@@ -3839,6 +3839,7 @@ version = "0.0.0"
 dependencies = [
  "numpy",
  "pyo3",
+ "rand 0.10.1",
  "systolic",
 ]
 

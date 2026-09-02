@@ -265,7 +265,7 @@ mod tests {
 
     proptest! {
         /// Recording must never change the result of a matmul: the hook's
-        /// `multiply_add` computes the exact same `a * w + psum` as the
+        /// `multiply_add` computes the exact same `a * w + partial_sum` as the
         /// trait default, in the same order, so the two paths must agree
         /// bit-for-bit.
         #[test]
@@ -415,7 +415,7 @@ mod tests {
         }
     }
 
-    /// Validates the psum chain endpoint, the regime classification, and the
+    /// Validates the partial-sum chain endpoint, the regime classification, and the
     /// column-to-output-row mapping against a computation that shares no
     /// reasoning with the profiler or the array simulator: a plain
     /// `ndarray` `.dot()`.
@@ -453,9 +453,9 @@ mod tests {
                 .expect("x is inside range_x");
             let samples = &artifact.drain_partial_sums[[drain_row, x]];
             assert_eq!(samples.len(), batch_size);
-            for (i, &psum) in samples.iter().enumerate() {
+            for (i, &partial_sum) in samples.iter().enumerate() {
                 let batch_column = batch_size - 1 - i;
-                assert_eq!(psum, expected[[output_row, batch_column]]);
+                assert_eq!(partial_sum, expected[[output_row, batch_column]]);
             }
         }
     }

@@ -242,7 +242,7 @@ one axis rather than competing implementations:
 | Keying | Groups (32x32 array) | Motivation |
 |---|---|---|
 | per-array | 1 | cheapest; the default |
-| per-row | 32 | psum magnitude grows with band depth |
+| per-row | 32 | partial-sum magnitude grows with band depth |
 | per-column | 32 | the natural keying for DRAIN |
 | per-PE | 1024 | finest; only if the above prove insufficient |
 
@@ -261,8 +261,8 @@ exploiting. Within ACTIVE, the activation at PE `(y,x)` is independent of `x` -
 the same value shifts across the whole row - so column dependence enters only
 through the weight, which varies by output channel and is broadly similar
 across a trained layer. Row dependence is real: band depth sets how many
-products the psum accumulates. DRAIN inverts this: all drain PEs in a column
-see the identical psum for a given pass, so its natural keying is per-column.
+products the partial sum accumulates. DRAIN inverts this: all drain PEs in a column
+see the identical partial sum for a given pass, so its natural keying is per-column.
 
 **Why the default should be the coarsest keying that validates.** Generation
 cost for one fault case is `K` netlist evaluations per distribution, so per-PE
@@ -551,9 +551,9 @@ agreed file format to build and unit-test against, not real profiled data.
     | Regime | Where | MAC inputs | Reaches output? |
     |---|---|---|---|
     | FIRST | `y == r0`, `x in range_x` | `(real a, real w, 0)` | yes |
-    | ACTIVE | `r0 < y < r1`, `x in range_x` | real `(a, w, psum)` | yes |
+    | ACTIVE | `r0 < y < r1`, `x in range_x` | real `(a, w, partial_sum)` | yes |
     | ZERO | `y < r0`, or `x not in range_x` | `(0, 0, 0)` | above-band: yes; idle column: no |
-    | DRAIN | `y >= r1`, `x in range_x` | `(0, 0, real psum)` | yes |
+    | DRAIN | `y >= r1`, `x in range_x` | `(0, 0, real partial_sum)` | yes |
 
     Keep "what are the inputs" and "does it reach the output" as **two
     separate axes**. Phase 2 only cares about the first; Phase 4 needs both.
@@ -565,7 +565,7 @@ agreed file format to build and unit-test against, not real profiled data.
     DRAIN is the easy one to get wrong. Output is read from the *physical*
     bottom row (`array.rs:340`), not from row `r1`, so when a pass doesn't
     fill the array vertically the partial sums must travel down through the
-    unloaded rows to reach readout. Those PEs compute `0.0 * 0.0 + psum` on a
+    unloaded rows to reach readout. Those PEs compute `0.0 * 0.0 + partial_sum` on a
     fully-formed partial sum. Modelling them as an all-zero case would predict
     a fixed constant error where the real one is data-dependent. Their zero
     activation and weight are real, not an artifact - `matmul` explicitly
@@ -578,12 +578,12 @@ agreed file format to build and unit-test against, not real profiled data.
     than sampled. That also removes the original worry that a
     frequently-idle PE would get a spuriously zero-heavy profile.
 
-    FIRST is split out of ACTIVE for the same reason ZERO is: its `psum` is
+    FIRST is split out of ACTIVE for the same reason ZERO is: its `partial_sum` is
     exactly `0`, always, fault-free - everything above the band is zero-valued,
     and at `y == 0` the code takes the `T::zero()` branch outright. That is a
     degenerate point, not a narrow distribution, and it is deterministic from
     the mapping like every other regime. Pulling it out means the only
-    remaining row-dependence inside ACTIVE is the smooth growth of `psum`
+    remaining row-dependence inside ACTIVE is the smooth growth of `partial_sum`
     magnitude with band depth (a sum of `y - r0` products, so roughly `sqrt(d)`
     in scale), which is far more poolable than a mixture of "exactly zero" and
     "not zero" would be.
@@ -606,7 +606,7 @@ agreed file format to build and unit-test against, not real profiled data.
   - **One implementation, not an oracle/workhorse pair.** These triples are
     also derivable analytically without cycling the array (per pass, an
     exclusive `cumsum` of `W_pass[:, :, None] * A_pass[None, :, :]` along the
-    reduction axis gives every psum at once), and that would be perhaps 10x
+    reduction axis gives every partial sum at once), and that would be perhaps 10x
     faster. It is deliberately **not** being built now:
     - Profiling is a one-time precompute at a scale the array handles fine
       (see the scale note under Python), so the speedup buys nothing today.
@@ -696,9 +696,9 @@ agreed file format to build and unit-test against, not real profiled data.
 
   - `first_triples: (nrows, ncols, K, 3)` + `first_fill: (nrows, ncols)`.
     Kept 3-wide rather than 2-wide so it shares every code path with ACTIVE;
-    the psum column is structurally zero and compresses away.
+    the partial-sum column is structurally zero and compresses away.
   - `active_triples: (nrows, ncols, K, 3)` + `active_fill: (nrows, ncols)`
-  - `drain_psums: (nrows, ncols, K)` + `drain_fill: (nrows, ncols)`
+  - `drain_partial_sums: (nrows, ncols, K)` + `drain_fill: (nrows, ncols)`
   - ZERO stores nothing. It is a single deterministic input point `(0, 0, 0)`,
     so Phase 3 evaluates the netlist there once per fault and gets one
     syndrome.
@@ -733,11 +733,11 @@ agreed file format to build and unit-test against, not real profiled data.
     enumeration over `(y, x, cycle)` without running the simulator at all.
   - All-zero census: `(0,0,0)` triples should be essentially absent from ACTIVE
     reservoirs. Post-ReLU `a == 0` is common, but `a == 0 && w == 0 &&
-    psum == 0` together is not in a trained net. Catches window *offset*
+    partial_sum == 0` together is not in a trained net. Catches window *offset*
     errors, which the count check alone would miss.
   - Reconstruction: for each pass, column `x`, free-axis element `b`, the last
-    band row's recorded `psum + a*w` must equal `pass_output[output_row(x), b]`
-    from an independent matmul. Validates the psum chain endpoint, the regime
+    band row's recorded `partial_sum + a*w` must equal `pass_output[output_row(x), b]`
+    from an independent matmul. Validates the partial-sum chain endpoint, the regime
     classification, and the column-to-output-row mapping against a computation
     that shares no reasoning with the profiler.
   - Coverage: every PE used by the mapping appears in the artifact, and each
@@ -839,7 +839,7 @@ distribution anywhere downstream of this phase.
     format Phase 4 consumes.
   - **One distribution per input regime**, mirroring Phase 2's artifact: an
     ACTIVE distribution from the sampled triples, a DRAIN distribution from the
-    sampled `(0, 0, psum)` inputs, and for ZERO a single syndrome per fault
+    sampled `(0, 0, partial_sum)` inputs, and for ZERO a single syndrome per fault
     case from the one deterministic `(0, 0, 0)` input - no sampling, no
     reservoir. Keeping them separate is what lets Phase 4 condition on the
     regime instead of marginalizing over it.

@@ -12,3 +12,4 @@ name = "_rust"
 systolic = { path = "../systolic" }
 numpy.workspace = true
 pyo3.workspace = true
+rand.workspace = true

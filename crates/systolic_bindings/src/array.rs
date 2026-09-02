@@ -6,12 +6,15 @@ use systolic::fault::RegisterHook;
 use super::fault::Fault;
 use super::mapping::Mapping;
 
-fn new_array(nrows: usize, ncols: usize) -> PyResult<SystolicArray<f32>> {
+pub(crate) fn new_array(nrows: usize, ncols: usize) -> PyResult<SystolicArray<f32>> {
     SystolicArray::<f32>::new(nrows, ncols)
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
-fn check_mapping<H>(array: &SystolicArray<f32, H>, mapping: &systolic::Mapping) -> PyResult<()> {
+pub(crate) fn check_mapping<H>(
+    array: &SystolicArray<f32, H>,
+    mapping: &systolic::Mapping,
+) -> PyResult<()> {
     if array.supports_mapping(mapping) {
         Ok(())
     } else {
