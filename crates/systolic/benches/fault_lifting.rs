@@ -2,9 +2,7 @@ use ndarray::Array2;
 use systolic::{
     Index2,
     array::SystolicArray,
-    fault::{
-        PeFaultRegister, PeRegisterFault, RegisterFault, RegisterHook, StuckAt, TargetedFault,
-    },
+    fault::{PeRegister, PeRegisterFault, RegisterFault, RegisterHook, StuckAt, TargetedFault},
 };
 
 /// Combined array-size and batch-size configuration used to parametrize each
@@ -56,7 +54,7 @@ fn multi_pass_configs() -> Vec<Config> {
 fn targeted_fault(
     nrows: usize,
     ncols: usize,
-    register: PeFaultRegister,
+    register: PeRegister,
 ) -> TargetedFault<PeRegisterFault> {
     TargetedFault {
         target: Index2 {
@@ -86,11 +84,8 @@ mod weight_fault {
         let weights = Array2::<f32>::ones((array_size, array_size));
         let activations = Array2::<f32>::ones((array_size, batch_size));
         let mapping = array.auto_mapping_for(&weights);
-        let hook = RegisterHook::from_fault(targeted_fault(
-            array_size,
-            array_size,
-            PeFaultRegister::Weight,
-        ));
+        let hook =
+            RegisterHook::from_fault(targeted_fault(array_size, array_size, PeRegister::Weight));
 
         bencher
             .with_inputs(|| array.clone().with_hook(hook.clone()))
@@ -112,7 +107,7 @@ mod weight_fault {
         let lifted = mapping.lift_register_fault(&targeted_fault(
             array_size,
             array_size,
-            PeFaultRegister::Weight,
+            PeRegister::Weight,
         ));
 
         bencher
@@ -139,7 +134,7 @@ mod activation_fault {
         let hook = RegisterHook::from_fault(targeted_fault(
             array_size,
             array_size,
-            PeFaultRegister::Activation,
+            PeRegister::Activation,
         ));
 
         bencher
@@ -162,7 +157,7 @@ mod activation_fault {
         let lifted = mapping.lift_register_fault(&targeted_fault(
             array_size,
             array_size,
-            PeFaultRegister::Activation,
+            PeRegister::Activation,
         ));
 
         bencher
@@ -189,7 +184,7 @@ mod accumulator_fault {
         let hook = RegisterHook::from_fault(targeted_fault(
             array_size,
             array_size,
-            PeFaultRegister::Accumulator,
+            PeRegister::Accumulator,
         ));
 
         bencher
@@ -212,7 +207,7 @@ mod accumulator_fault {
         let lifted = mapping.lift_register_fault(&targeted_fault(
             array_size,
             array_size,
-            PeFaultRegister::Accumulator,
+            PeRegister::Accumulator,
         ));
 
         bencher
@@ -247,7 +242,7 @@ mod multi_pass {
         let hook = RegisterHook::from_fault(targeted_fault(
             ARRAY_SIZE,
             ARRAY_SIZE,
-            PeFaultRegister::Accumulator,
+            PeRegister::Accumulator,
         ));
 
         bencher
@@ -270,7 +265,7 @@ mod multi_pass {
         let lifted = mapping.lift_register_fault(&targeted_fault(
             ARRAY_SIZE,
             ARRAY_SIZE,
-            PeFaultRegister::Accumulator,
+            PeRegister::Accumulator,
         ));
 
         bencher

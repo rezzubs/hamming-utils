@@ -1,9 +1,11 @@
+mod hook;
 mod index;
 mod mapping;
 mod register;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use hook::{NoOp, PeHook};
 pub use index::{Index, Index2};
 pub use mapping::{Connection, InvalidMappingError, Mapping, Pass};
 use ndarray::prelude::*;
@@ -13,7 +15,7 @@ use std::{
     ops::{AddAssign, Mul},
 };
 
-use crate::fault::{FaultHook, NoFault, PeFaultRegister};
+use crate::fault::PeRegister;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 struct ProcessingElement<T> {
@@ -44,11 +46,11 @@ pub(crate) fn cycle_count(nrows: usize, ncols: usize, batch_size: usize) -> usiz
 
 /// A simulator for a systolic array.
 ///
-/// `H` is the fault hook applied to every register write and multiply-add in
-/// the run loop. The default `H = NoFault` is a zero-sized no-op and compiles
-/// away entirely.
+/// `H` is the hook applied to every register write and multiply-add in the run
+/// loop, for fault injection or pure observation. The default `H = NoOp` is a
+/// zero-sized no-op and compiles away entirely.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystolicArray<T, H = NoFault> {
+pub struct SystolicArray<T, H = NoOp> {
     elements: Array2<ProcessingElement<T>>,
     /// Weights as supplied by the caller, before fault corruption. Kept so that
     /// swapping the hook can re-derive the effective weights without the caller
@@ -77,7 +79,7 @@ impl<T: Default + Clone> SystolicArray<T> {
         Ok(Self {
             elements: Array2::from_elem((nrows, ncols), ProcessingElement::default()),
             clean_weights: Array2::from_elem((nrows, ncols), T::default()),
-            hook: NoFault,
+            hook: NoOp,
         })
     }
 
@@ -142,12 +144,12 @@ impl<T, H> SystolicArray<T, H> {
 impl<T, H> SystolicArray<T, H>
 where
     T: Default + Clone,
-    H: FaultHook<T>,
+    H: PeHook<T>,
 {
     /// Replace the fault hook, consuming this array and returning one with the
     /// new hook installed. Effective weights are re-derived from the stored
     /// clean weights so the new hook is reflected immediately.
-    pub fn with_hook<H2: FaultHook<T>>(self, hook: H2) -> SystolicArray<T, H2> {
+    pub fn with_hook<H2: PeHook<T>>(self, hook: H2) -> SystolicArray<T, H2> {
         let mut next = SystolicArray {
             elements: self.elements,
             clean_weights: self.clean_weights,
@@ -200,9 +202,7 @@ where
                         y: pass_y as Index,
                         x: x as Index,
                     };
-                    value = self
-                        .hook
-                        .on_write(pass_index, PeFaultRegister::Weight, value);
+                    value = self.hook.on_write(pass_index, PeRegister::Weight, value);
                 }
                 self.elements[element_index].weight.write(value);
             }
@@ -292,7 +292,7 @@ where
                     };
                     let incoming_activation = self.hook.on_write(
                         current_element_index,
-                        PeFaultRegister::Activation,
+                        PeRegister::Activation,
                         incoming_activation,
                     );
                     self.elements[[y, x]].activation.write(incoming_activation);
@@ -320,7 +320,7 @@ where
                     );
                     let partial_sum = self.hook.on_write(
                         current_element_index,
-                        PeFaultRegister::Accumulator,
+                        PeRegister::Accumulator,
                         partial_sum,
                     );
                     self.elements[current_element_index]

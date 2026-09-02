@@ -1,4 +1,4 @@
-use crate::fault::{PeFaultRegister, RandomFault, RegisterHook, StuckAt, XorMaskHook};
+use crate::fault::{PeRegister, RandomFault, RegisterHook, StuckAt, XorMaskHook};
 use crate::test_utilities::{ARR_SIZE, generate_array, generate_weights_and_activations};
 use proptest::prelude::*;
 use rand::SeedableRng;
@@ -180,7 +180,7 @@ fn weight_register_fault_corrupts_output() {
 
     let hook = RegisterHook {
         target: Index2 { x: 0, y: 0 },
-        register: PeFaultRegister::Weight,
+        register: PeRegister::Weight,
         bit_index: 0,
         stuck_at: StuckAt::One,
     };
@@ -209,7 +209,7 @@ fn weight_fault_propagates_to_lower_pes() {
 
     let hook = RegisterHook {
         target: Index2 { x: 0, y: 1 },
-        register: PeFaultRegister::Weight,
+        register: PeRegister::Weight,
         bit_index: 0,
         stuck_at: StuckAt::One,
     };
@@ -225,14 +225,14 @@ fn weight_fault_propagates_to_lower_pes() {
 
 #[test]
 fn with_hook_rederives_weights() {
-    // Load weights under a fault, then swap to NoFault via with_hook.
+    // Load weights under a fault, then swap to NoOp via with_hook.
     // The output should reflect the clean weights without reloading.
     let weights = array![[4u32]];
     let activations = array![[1u32]];
 
     let hook = RegisterHook {
         target: Index2 { x: 0, y: 0 },
-        register: PeFaultRegister::Weight,
+        register: PeRegister::Weight,
         bit_index: 0,
         stuck_at: StuckAt::One,
     };
@@ -241,7 +241,7 @@ fn with_hook_rederives_weights() {
     sa.set_weights(&weights);
     assert_eq!(sa.run(&activations), array![[5u32]]);
 
-    let mut sa = sa.with_hook(crate::fault::NoFault);
+    let mut sa = sa.with_hook(NoOp);
     assert_eq!(sa.run(&activations), array![[4u32]]);
 }
 
@@ -258,7 +258,7 @@ fn set_hook_rederives_weights() {
 
     let hook_at_y1 = RegisterHook {
         target: Index2 { x: 0, y: 1 },
-        register: PeFaultRegister::Weight,
+        register: PeRegister::Weight,
         bit_index: 0,
         stuck_at: StuckAt::One,
     };
@@ -271,7 +271,7 @@ fn set_hook_rederives_weights() {
 
     sa.set_hook(RegisterHook {
         target: Index2 { x: 0, y: 2 },
-        register: PeFaultRegister::Weight,
+        register: PeRegister::Weight,
         bit_index: 0,
         stuck_at: StuckAt::One,
     });

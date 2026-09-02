@@ -4,7 +4,7 @@ use ndarray::prelude::*;
 
 use crate::Index2;
 use crate::Mapping;
-use crate::fault::register::{PeFaultRegister, PeRegisterFault, RegisterFault, TargetedFault};
+use crate::fault::register::{PeRegister, PeRegisterFault, RegisterFault, TargetedFault};
 
 /// The accumulated-fault fix-up for one output row in one pass.
 ///
@@ -248,9 +248,9 @@ impl Mapping {
         let register_fault = fault.fault.fault;
         let index = fault.target;
         match fault.fault.register {
-            PeFaultRegister::Weight => self.lift_weight_fault(register_fault, index),
-            PeFaultRegister::Activation => self.lift_activation_fault(register_fault, index),
-            PeFaultRegister::Accumulator => self.lift_accumulator_fault(register_fault, index),
+            PeRegister::Weight => self.lift_weight_fault(register_fault, index),
+            PeRegister::Activation => self.lift_activation_fault(register_fault, index),
+            PeRegister::Accumulator => self.lift_accumulator_fault(register_fault, index),
         }
     }
 }
@@ -260,14 +260,14 @@ mod tests {
     use ndarray::Array2;
     use proptest::prelude::*;
 
-    use crate::fault::register::{PeFaultRegister, PeRegisterFault, RegisterHook, TargetedFault};
+    use crate::fault::register::{PeRegister, PeRegisterFault, RegisterHook, TargetedFault};
     use crate::test_utilities::{
         ArrItem, generate_array_with_register_fault, generate_weights_and_activations,
     };
 
     fn make_targeted_fault(
         index: crate::Index2,
-        register: PeFaultRegister,
+        register: PeRegister,
         fault: crate::fault::RegisterFault,
     ) -> TargetedFault<PeRegisterFault> {
         TargetedFault {
@@ -295,7 +295,7 @@ mod tests {
             (weights, activations) in generate_weights_and_activations(),
         ) {
             let mapping = array.auto_mapping_for(&weights);
-            let targeted = make_targeted_fault(index, PeFaultRegister::Weight, fault);
+            let targeted = make_targeted_fault(index, PeRegister::Weight, fault);
 
             let expected = literal_matmul(array, targeted.clone(), &mapping, &weights, &activations);
             let result = mapping.lift_register_fault(&targeted).matmul(weights, activations);
@@ -309,7 +309,7 @@ mod tests {
             (weights, activations) in generate_weights_and_activations(),
         ) {
             let mapping = array.auto_mapping_for(&weights);
-            let targeted = make_targeted_fault(index, PeFaultRegister::Activation, fault);
+            let targeted = make_targeted_fault(index, PeRegister::Activation, fault);
 
             let expected = literal_matmul(array, targeted.clone(), &mapping, &weights, &activations);
             let result = mapping.lift_register_fault(&targeted).matmul(weights, activations);
@@ -323,7 +323,7 @@ mod tests {
             (weights, activations) in generate_weights_and_activations(),
         ) {
             let mapping = array.auto_mapping_for(&weights);
-            let targeted = make_targeted_fault(index, PeFaultRegister::Accumulator, fault);
+            let targeted = make_targeted_fault(index, PeRegister::Accumulator, fault);
 
             let expected = literal_matmul(array, targeted.clone(), &mapping, &weights, &activations);
             let result = mapping.lift_register_fault(&targeted).matmul(weights, activations);
@@ -353,7 +353,7 @@ mod tests {
         // The faulty zero corrupt(0) = 2^3 = 8 flows down into the column sum.
         let targeted = make_targeted_fault(
             Index2 { x: 0, y: 0 },
-            PeFaultRegister::Accumulator,
+            PeRegister::Accumulator,
             RegisterFault {
                 stuck_at: StuckAt::One,
                 bit_index: 3,

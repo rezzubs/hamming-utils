@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use pyo3::{exceptions::PyValueError, prelude::*};
 use systolic::fault::{
-    PeFaultRegister, PeRegisterFault, RegisterFault, RegisterFaultContext, RegisterSubset, StuckAt,
+    PeRegister, PeRegisterFault, RegisterFault, RegisterFaultContext, RegisterSubset, StuckAt,
     TargetedFault,
 };
 use systolic::{Index2 as RustIndex2, Space};
@@ -18,22 +18,22 @@ pub enum PeRegisterKind {
     Accumulator,
 }
 
-impl From<PeFaultRegister> for PeRegisterKind {
-    fn from(value: PeFaultRegister) -> Self {
+impl From<PeRegister> for PeRegisterKind {
+    fn from(value: PeRegister) -> Self {
         match value {
-            PeFaultRegister::Activation => PeRegisterKind::Activation,
-            PeFaultRegister::Weight => PeRegisterKind::Weight,
-            PeFaultRegister::Accumulator => PeRegisterKind::Accumulator,
+            PeRegister::Activation => PeRegisterKind::Activation,
+            PeRegister::Weight => PeRegisterKind::Weight,
+            PeRegister::Accumulator => PeRegisterKind::Accumulator,
         }
     }
 }
 
-impl From<PeRegisterKind> for PeFaultRegister {
+impl From<PeRegisterKind> for PeRegister {
     fn from(value: PeRegisterKind) -> Self {
         match value {
-            PeRegisterKind::Activation => PeFaultRegister::Activation,
-            PeRegisterKind::Weight => PeFaultRegister::Weight,
-            PeRegisterKind::Accumulator => PeFaultRegister::Accumulator,
+            PeRegisterKind::Activation => PeRegister::Activation,
+            PeRegisterKind::Weight => PeRegister::Weight,
+            PeRegisterKind::Accumulator => PeRegister::Accumulator,
         }
     }
 }
@@ -70,7 +70,7 @@ fn register_fault_context(
 ) -> RegisterFaultContext {
     RegisterFaultContext {
         array: array.0,
-        registers: RegisterSubset::new(allowed_registers.into_iter().map(PeFaultRegister::from)),
+        registers: RegisterSubset::new(allowed_registers.into_iter().map(PeRegister::from)),
     }
 }
 

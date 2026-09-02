@@ -1,7 +1,7 @@
 use crate::{Index2, Space, mixed_radix, space};
 use std::ops::{Add, Mul};
 
-use super::hook::FaultHook;
+use crate::array::PeHook;
 
 /// A gate-level fault in a PE's multiply-add unit, enumerable via netlist case index.
 ///
@@ -62,7 +62,7 @@ impl SimulatedMulAddHook {
     }
 }
 
-impl<T> FaultHook<T> for SimulatedMulAddHook {
+impl<T> PeHook<T> for SimulatedMulAddHook {
     fn multiply_add(&mut self, index: Index2, activation: T, weight: T, partial_sum: T) -> T
     where
         T: Add<Output = T> + Mul<Output = T>,

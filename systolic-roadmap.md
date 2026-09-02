@@ -68,7 +68,7 @@ The fault taxonomy and the execution strategy are two independent axes.
   per-weight-shape `Mapping` cache. The ABC is `SystolicBackend`, not a generic
   "matmul backend" (see Conventions and terminology). Two implementations:
   - `SimulatedBackend` - the **oracle**. Runs the cycle-accurate array via a
-    `FaultHook`. Slow, CPU. Used for validation and cross-checks, not for large
+    `PeHook`. Slow, CPU. Used for validation and cross-checks, not for large
     campaigns.
   - `LiftedBackend` - the **workhorse**. Asks Rust for a lifted *description*
     and applies it with torch ops (GPU, model dtype, amortized over the batch).
@@ -515,11 +515,11 @@ developed in parallel with both, since it only needs *a* distribution in the
 agreed file format to build and unit-test against, not real profiled data.
 
 - **Rust.**
-  - A recording hook implementing the existing `FaultHook<T>` trait
-    (`crates/systolic/src/fault/hook.rs`). No new mechanism is needed:
+  - A recording hook implementing the existing `PeHook<T>` trait
+    (`crates/systolic/src/array/hook.rs`). No new mechanism is needed:
     `multiply_add(index, activation, weight, partial_sum)` already receives
     exactly the PE coordinate and the three logic inputs. "Disabled by
-    default" just means not installing it (the array runs `NoFault`);
+    default" just means not installing it (the array runs `NoOp`);
     profiling runs the `SimulatedBackend` with the recording hook installed.
   - **The hook must not record unconditionally.** `matmul` (`array.rs`) runs
     the array at its *full* physical `nrows x ncols` extent on every pass,
@@ -775,7 +775,7 @@ throwaway scaffolding to be reviewable on its own.
    fixed seed, and the `n < K` case are tested. Independent of (1) - either
    order.
 3. **Recording hook + per-pass driver.** Composes (1) and (2) into the
-   `FaultHook<f32>` with the per-PE cycle counter, plus the driver owning the
+   `PeHook<f32>` with the per-PE cycle counter, plus the driver owning the
    pass loop. *Done when* one matmul produces an in-memory artifact with the
    passthrough, all-zero census and reconstruction checks passing.
 4. **Bindings + serialization.** Expose to Python; `npz` plus JSON sidecar.
@@ -813,7 +813,7 @@ chunk 3 as its future validation target), the syndrome-model keying choice
 **Objective.** Turn Phase 2's per-PE profiled inputs into the syndrome
 distribution Phase 4's sampled fault path consumes, by running the netlist
 over them. This needs only the netlist crate and Phase 2's artifact - no
-`SystolicArray`, no `FaultHook`, no array structure involved at all - so it's
+`SystolicArray`, no `PeHook`, no array structure involved at all - so it's
 buildable independent of the array-embedded oracle (Phase 5). A real PE
 netlist is available, so there's no need for a synthetic placeholder
 distribution anywhere downstream of this phase.

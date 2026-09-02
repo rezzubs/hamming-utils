@@ -1,7 +1,7 @@
 use crate::{Index2, Space, helper::u64, mixed_radix, space, space::AsArrayConfig};
 use memory::BitBuffer;
 
-use super::hook::FaultHook;
+use crate::array::PeHook;
 
 /// A fault targeting a specific processing element (PE).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,13 +122,13 @@ impl Space for RegisterFault {
 
 /// Which register of a PE is faulty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PeFaultRegister {
+pub enum PeRegister {
     Activation,
     Weight,
     Accumulator,
 }
 
-impl Space for PeFaultRegister {
+impl Space for PeRegister {
     type Context = ();
 
     fn count(_: ()) -> u64 {
@@ -137,23 +137,23 @@ impl Space for PeFaultRegister {
 
     fn to_index(&self, _: ()) -> u64 {
         match self {
-            PeFaultRegister::Activation => 0,
-            PeFaultRegister::Weight => 1,
-            PeFaultRegister::Accumulator => 2,
+            PeRegister::Activation => 0,
+            PeRegister::Weight => 1,
+            PeRegister::Accumulator => 2,
         }
     }
 
     fn from_index(index: u64, _: ()) -> Self {
         match index {
-            0 => PeFaultRegister::Activation,
-            1 => PeFaultRegister::Weight,
-            2 => PeFaultRegister::Accumulator,
-            _ => panic!("index out of range for PeFaultRegister"),
+            0 => PeRegister::Activation,
+            1 => PeRegister::Weight,
+            2 => PeRegister::Accumulator,
+            _ => panic!("index out of range for PeRegister"),
         }
     }
 }
 
-/// A restriction of which [`PeFaultRegister`] variants are eligible for a
+/// A restriction of which [`PeRegister`] variants are eligible for a
 /// fault. Shrinks [`PeRegisterFault`]'s radix to just the registers of
 /// interest via a dense re-index (not reject sampling), so the `Picker`'s
 /// without-replacement exhaustion stays correct.
@@ -173,7 +173,7 @@ impl RegisterSubset {
     };
 
     /// Create a new `RegisterSubset` from a sequence of register variants.
-    pub fn new(registers: impl IntoIterator<Item = PeFaultRegister>) -> Self {
+    pub fn new(registers: impl IntoIterator<Item = PeRegister>) -> Self {
         let mut subset = Self {
             activation: false,
             weight: false,
@@ -181,9 +181,9 @@ impl RegisterSubset {
         };
         for register in registers {
             match register {
-                PeFaultRegister::Activation => subset.activation = true,
-                PeFaultRegister::Weight => subset.weight = true,
-                PeFaultRegister::Accumulator => subset.accumulator = true,
+                PeRegister::Activation => subset.activation = true,
+                PeRegister::Weight => subset.weight = true,
+                PeRegister::Accumulator => subset.accumulator = true,
             }
         }
         subset
@@ -195,21 +195,21 @@ impl RegisterSubset {
     /// from data not already known to respect a [`RegisterFaultContext`] (e.g.
     /// a value crossing an FFI boundary) should check this before indexing,
     /// since `index_of` panics on a non-member register.
-    pub fn contains(&self, register: &PeFaultRegister) -> bool {
+    pub fn contains(&self, register: &PeRegister) -> bool {
         match register {
-            PeFaultRegister::Activation => self.activation,
-            PeFaultRegister::Weight => self.weight,
-            PeFaultRegister::Accumulator => self.accumulator,
+            PeRegister::Activation => self.activation,
+            PeRegister::Weight => self.weight,
+            PeRegister::Accumulator => self.accumulator,
         }
     }
 
     /// The eligible registers, in a fixed canonical order. This order is what
     /// makes the dense re-index deterministic and round-trippable.
-    fn ordered(&self) -> impl Iterator<Item = PeFaultRegister> + '_ {
+    fn ordered(&self) -> impl Iterator<Item = PeRegister> + '_ {
         [
-            PeFaultRegister::Activation,
-            PeFaultRegister::Weight,
-            PeFaultRegister::Accumulator,
+            PeRegister::Activation,
+            PeRegister::Weight,
+            PeRegister::Accumulator,
         ]
         .into_iter()
         .filter(move |register| self.contains(register))
@@ -220,14 +220,14 @@ impl RegisterSubset {
     }
 
     /// Get the index of `register` within [`Self::ordered`].
-    fn index_of(&self, register: &PeFaultRegister) -> u64 {
+    fn index_of(&self, register: &PeRegister) -> u64 {
         self.ordered()
             .position(|candidate| &candidate == register)
             .expect("register must be a member of the subset") as u64
     }
 
     /// Get a corresponding register from the order defined by [`Self::ordered`].
-    fn register_at(&self, index: u64) -> PeFaultRegister {
+    fn register_at(&self, index: u64) -> PeRegister {
         self.ordered()
             .nth(index as usize)
             .expect("index must be within the subset's count")
@@ -255,7 +255,7 @@ impl space::AsArrayConfig for RegisterFaultContext {
 /// A stuck-at fault targeting a specific register of a PE.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeRegisterFault {
-    pub register: PeFaultRegister,
+    pub register: PeRegister,
     pub fault: RegisterFault,
 }
 
@@ -299,7 +299,7 @@ impl Space for PeRegisterFault {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterHook {
     pub target: Index2,
-    pub register: PeFaultRegister,
+    pub register: PeRegister,
     pub bit_index: u8,
     pub stuck_at: StuckAt,
 }
@@ -315,8 +315,8 @@ impl RegisterHook {
     }
 }
 
-impl<T: BitBuffer> FaultHook<T> for RegisterHook {
-    fn on_write(&mut self, index: Index2, reg: PeFaultRegister, mut v: T) -> T {
+impl<T: BitBuffer> PeHook<T> for RegisterHook {
+    fn on_write(&mut self, index: Index2, reg: PeRegister, mut v: T) -> T {
         if index == self.target && reg == self.register {
             match self.stuck_at {
                 StuckAt::Zero => v.set_0(self.bit_index as usize),
@@ -330,11 +330,11 @@ impl<T: BitBuffer> FaultHook<T> for RegisterHook {
 #[cfg(test)]
 mod tests {
     use super::{
-        PeFaultRegister, PeRegisterFault, RegisterFault, RegisterFaultContext, RegisterHook,
+        PeRegister, PeRegisterFault, RegisterFault, RegisterFaultContext, RegisterHook,
         RegisterSubset, StuckAt, TargetedFault,
     };
     use crate::Index2;
-    use crate::fault::FaultHook;
+    use crate::array::PeHook;
     use crate::space::{ArrayConfig, Space};
 
     fn config(nrows: usize, ncols: usize, dtype_bits: u8) -> ArrayConfig {
@@ -366,17 +366,14 @@ mod tests {
     #[test]
     fn pe_fault_register_round_trip() {
         for variant in [
-            PeFaultRegister::Activation,
-            PeFaultRegister::Weight,
-            PeFaultRegister::Accumulator,
+            PeRegister::Activation,
+            PeRegister::Weight,
+            PeRegister::Accumulator,
         ] {
-            assert_eq!(
-                PeFaultRegister::from_index(variant.to_index(()), ()),
-                variant
-            );
+            assert_eq!(PeRegister::from_index(variant.to_index(()), ()), variant);
         }
-        for index in 0..PeFaultRegister::count(()) {
-            assert_eq!(PeFaultRegister::from_index(index, ()).to_index(()), index);
+        for index in 0..PeRegister::count(()) {
+            assert_eq!(PeRegister::from_index(index, ()).to_index(()), index);
         }
     }
 
@@ -400,8 +397,7 @@ mod tests {
 
     #[test]
     fn pe_register_fault_round_trip_restricted_subset() {
-        let registers =
-            RegisterSubset::new([PeFaultRegister::Weight, PeFaultRegister::Accumulator]);
+        let registers = RegisterSubset::new([PeRegister::Weight, PeRegister::Accumulator]);
         let context = register_context(1, 1, 8, registers);
         assert_eq!(
             PeRegisterFault::count(context),
@@ -409,7 +405,7 @@ mod tests {
         );
         for index in 0..PeRegisterFault::count(context) {
             let fault = PeRegisterFault::from_index(index, context);
-            assert_ne!(fault.register, PeFaultRegister::Activation);
+            assert_ne!(fault.register, PeRegister::Activation);
             assert_eq!(fault.to_index(context), index);
         }
     }
@@ -425,11 +421,11 @@ mod tests {
 
     #[test]
     fn targeted_fault_round_trip_restricted_subset() {
-        let registers = RegisterSubset::new([PeFaultRegister::Weight]);
+        let registers = RegisterSubset::new([PeRegister::Weight]);
         let context = register_context(2, 2, 4, registers);
         for index in 0..TargetedFault::<PeRegisterFault>::count(context) {
             let fault = TargetedFault::<PeRegisterFault>::from_index(index, context);
-            assert_eq!(fault.fault.register, PeFaultRegister::Weight);
+            assert_eq!(fault.fault.register, PeRegister::Weight);
             assert_eq!(fault.to_index(context), index);
         }
     }
@@ -437,7 +433,7 @@ mod tests {
     fn make_hook(
         x: u16,
         y: u16,
-        register: PeFaultRegister,
+        register: PeRegister,
         bit_index: u8,
         stuck_at: StuckAt,
     ) -> RegisterHook {
@@ -451,29 +447,29 @@ mod tests {
 
     #[test]
     fn on_write_stuck_at_zero_clears_bit() {
-        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        let mut hook = make_hook(0, 0, PeRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeRegister::Weight, 0xFF);
         assert_eq!(result, 0xFE);
     }
 
     #[test]
     fn on_write_stuck_at_one_sets_bit() {
-        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::One);
-        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Weight, 0x00);
+        let mut hook = make_hook(0, 0, PeRegister::Weight, 0, StuckAt::One);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeRegister::Weight, 0x00);
         assert_eq!(result, 0x01);
     }
 
     #[test]
     fn on_write_non_matching_pe_passes_through() {
-        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 = hook.on_write(Index2 { x: 1, y: 0 }, PeFaultRegister::Weight, 0xFF);
+        let mut hook = make_hook(0, 0, PeRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 = hook.on_write(Index2 { x: 1, y: 0 }, PeRegister::Weight, 0xFF);
         assert_eq!(result, 0xFF);
     }
 
     #[test]
     fn on_write_non_matching_register_passes_through() {
-        let mut hook = make_hook(0, 0, PeFaultRegister::Weight, 0, StuckAt::Zero);
-        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeFaultRegister::Activation, 0xFF);
+        let mut hook = make_hook(0, 0, PeRegister::Weight, 0, StuckAt::Zero);
+        let result: u8 = hook.on_write(Index2 { x: 0, y: 0 }, PeRegister::Activation, 0xFF);
         assert_eq!(result, 0xFF);
     }
 }

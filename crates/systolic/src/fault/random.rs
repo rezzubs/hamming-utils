@@ -3,7 +3,7 @@ use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
 use std::ops::{Add, BitXor, Mul};
 
-use super::hook::FaultHook;
+use crate::array::PeHook;
 
 /// A stochastic XOR-mask fault. Not enumerable; reproduced by re-seeding the
 /// same RNG before constructing [`XorMaskHook`].
@@ -54,7 +54,7 @@ impl<T, R: rand::Rng> XorMaskHook<T, R> {
     }
 }
 
-impl<T, R> FaultHook<T> for XorMaskHook<T, R>
+impl<T, R> PeHook<T> for XorMaskHook<T, R>
 where
     T: Add<Output = T> + Mul<Output = T> + BitXor<Output = T> + Clone,
     R: rand::Rng,
@@ -77,7 +77,7 @@ where
 mod tests {
     use super::{RandomFault, XorMaskHook};
     use crate::Index2;
-    use crate::fault::FaultHook;
+    use crate::array::PeHook;
     use rand::SeedableRng;
 
     fn target() -> Index2 {
