@@ -99,17 +99,10 @@ mod tests {
     use super::*;
 
     use crate::array::{Index2, Pass, PeHook, SystolicArray, cycle_count, shift_activations};
-    use crate::test_utilities::ARR_SIZE;
+    use crate::test_utilities::{ARR_SIZE, index};
     use ndarray::Array2;
     use proptest::prelude::*;
     use std::ops::{Add, Mul};
-
-    fn index(y: usize, x: usize) -> Index2 {
-        Index2 {
-            x: x.try_into().expect("index fits in u16"),
-            y: y.try_into().expect("index fits in u16"),
-        }
-    }
 
     /// Every `(nrows, ncols, batch_size)` triple the exhaustive checks below
     /// enumerate. Kept as a single small range shared by all of them, rather

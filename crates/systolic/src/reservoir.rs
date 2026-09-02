@@ -6,15 +6,6 @@ use rand::RngExt;
 /// Every item seen so far has equal probability `capacity / seen` of being
 /// present in the final sample, without needing to know the stream length in
 /// advance.
-// Not wired up to a consumer yet outside of tests: `expect` (rather than
-// `allow`), scoped to non-test builds only, so this starts warning the
-// moment Phase 2 chunk 3's recording hook uses it, as a reminder to remove
-// the attribute then. Unscoped `expect` would itself warn under `cfg(test)`,
-// where the methods are already exercised by the tests below.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the Phase 2 chunk 3 recording hook")
-)]
 pub struct Reservoir<T> {
     /// Fixed-length buffer, one slot per capacity unit. Slots past
     /// `seen_count` (while the reservoir isn't full yet) hold `T::default()`
@@ -26,10 +17,6 @@ pub struct Reservoir<T> {
     observed_count: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the Phase 2 chunk 3 recording hook")
-)]
 impl<T: Default> Reservoir<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -66,6 +53,13 @@ impl<T: Default> Reservoir<T> {
     }
 
     /// How many items have been observed in total.
+    // Not read by chunk 3's `ProfilingArtifact` - it doesn't need a weight,
+    // since regime membership is looked up structurally from the mapping -
+    // but is kept for spotting a PE with empty support later.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "kept for a future consumer, see comment above")
+    )]
     pub fn observed_count(&self) -> usize {
         self.observed_count
     }

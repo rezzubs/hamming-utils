@@ -58,3 +58,10 @@ pub(crate) fn generate_array_with_register_fault()
         })
         .boxed()
 }
+
+pub(crate) fn index(y: usize, x: usize) -> Index2 {
+    Index2 {
+        x: x.try_into().expect("index fits in u16"),
+        y: y.try_into().expect("index fits in u16"),
+    }
+}

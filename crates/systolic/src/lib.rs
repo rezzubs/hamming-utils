@@ -10,6 +10,7 @@ pub mod array;
 pub mod fault;
 mod helper;
 mod mixed_radix;
+pub mod profile;
 mod reservoir;
 mod space;
 #[cfg(test)]

@@ -395,6 +395,8 @@ where
         let mut result = Array2::<T>::zeros((output_row_count, batch_size));
 
         for pass in mapping {
+            self.hook.on_pass_start(pass, batch_size);
+
             // PERF: It may be faster to only fill the indices that aren't
             // touched by the following assignment.
             pass_weights.fill(T::zero());
