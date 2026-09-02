@@ -8,6 +8,8 @@ use std::{
 
 use ndarray::prelude::*;
 
+use super::{Index2, Regime};
+
 /// A single pass through a systolic array. Describes a full or partial matrix multiplication.
 ///
 /// The components describe which input (activation) rows will be passed through
@@ -100,6 +102,13 @@ impl Pass {
     pub fn output_row_from_array_col(&self, input_col: usize) -> Option<usize> {
         let shifted_index = input_col.checked_sub(self.array_col_start)?;
         range_get(&self.output_rows, shifted_index)
+    }
+
+    /// Which regime this pass puts the element at `index` in.
+    ///
+    /// Convenience wrapper for [`Regime::classify`]. See that for details.
+    pub fn regime(&self, index: Index2) -> Regime {
+        Regime::classify(self, index)
     }
 }
 

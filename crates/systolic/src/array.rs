@@ -1,6 +1,7 @@
 mod hook;
 mod index;
 mod mapping;
+mod regime;
 mod register;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -9,6 +10,7 @@ pub use hook::{NoOp, PeHook};
 pub use index::{Index, Index2};
 pub use mapping::{Connection, InvalidMappingError, Mapping, Pass};
 use ndarray::prelude::*;
+pub use regime::{Regime, current_column};
 use register::Register;
 use std::{
     fmt::Debug,

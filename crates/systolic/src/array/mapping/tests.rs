@@ -168,3 +168,14 @@ fn inconsistent_passes() {
         })
     );
 }
+
+/// `Pass::regime` just forwards to `Regime::classify`; `Regime::classify`
+/// itself carries the real coverage (hand cases and a property test) in
+/// `array::regime::tests`, so this only needs to confirm the delegation.
+#[test]
+fn regime_delegates_to_regime_classify() {
+    let pass = Pass::new(0..2, 0..2);
+    let index = Index2 { x: 0, y: 0 };
+
+    assert_eq!(pass.regime(index), Regime::classify(&pass, index));
+}

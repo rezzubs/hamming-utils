@@ -15,7 +15,7 @@ mod space;
 pub(crate) mod test_utilities;
 
 pub use array::{
-    Connection, CreationError, Index, Index2, InvalidMappingError, Mapping, Pass, SystolicArray,
-    shift_activations, unshift_output,
+    Connection, CreationError, Index, Index2, InvalidMappingError, Mapping, Pass, Regime,
+    SystolicArray, current_column, shift_activations, unshift_output,
 };
 pub use space::{ArrayConfig, Space};
