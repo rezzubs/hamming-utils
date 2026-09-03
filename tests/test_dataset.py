@@ -73,3 +73,48 @@ def test_precompute_calls_advance_once_per_batch(
     _ = dataset.precompute(progress=Progress())
 
     assert calls == [1] * 5
+
+
+def _collect_indices(dataset: BatchedDataset) -> list[int]:
+    return [int(batch.inputs.item()) for batch in dataset]
+
+
+def test_shuffle_defaults_to_dataset_order() -> None:
+    dataset = BatchedDataset.from_dataset(_SizedDataset(10), batch_size=1)
+    assert _collect_indices(dataset) == list(range(10))
+
+
+def test_shuffle_reorders_with_same_seed_deterministically() -> None:
+    first = BatchedDataset.from_dataset(
+        _SizedDataset(20), batch_size=1, shuffle=True, seed=0
+    )
+    second = BatchedDataset.from_dataset(
+        _SizedDataset(20), batch_size=1, shuffle=True, seed=0
+    )
+    order_a = _collect_indices(first)
+    order_b = _collect_indices(second)
+
+    assert order_a == order_b
+    assert order_a != list(range(20))
+    assert sorted(order_a) == list(range(20))
+
+
+def test_shuffle_reset_reproduces_same_order() -> None:
+    dataset = BatchedDataset.from_dataset(
+        _SizedDataset(20), batch_size=1, shuffle=True, seed=0
+    )
+    first_pass = _collect_indices(dataset)
+    dataset.reset()
+    second_pass = _collect_indices(dataset)
+
+    assert first_pass == second_pass
+
+
+def test_shuffle_different_seeds_differ() -> None:
+    a = BatchedDataset.from_dataset(
+        _SizedDataset(20), batch_size=1, shuffle=True, seed=0
+    )
+    b = BatchedDataset.from_dataset(
+        _SizedDataset(20), batch_size=1, shuffle=True, seed=1
+    )
+    assert _collect_indices(a) != _collect_indices(b)

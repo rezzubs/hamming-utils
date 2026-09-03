@@ -63,6 +63,8 @@ class CifarDataset(enum.StrEnum):
         batch_size: int = DEFAULT_BATCH_SIZE,
         device: DeviceLike = DEFAULT_DEVICE,
         *,
+        shuffle: bool = False,
+        seed: int | None = None,
         progress: Progress | None = None,
     ) -> BatchedDataset:
         """Download (if needed) and load the validation split."""
@@ -100,7 +102,9 @@ class CifarDataset(enum.StrEnum):
                         transform=transform,
                     )
 
-        return BatchedDataset.from_dataset(dataset, batch_size, device)
+        return BatchedDataset.from_dataset(
+            dataset, batch_size, device, shuffle=shuffle, seed=seed
+        )
 
 
 @dataclass(slots=True)
@@ -144,7 +148,15 @@ class Cifar(ModelBundle):
 
     @override
     def load_dataset(
-        self, batch_size: int, device: DeviceLike, *, progress: Progress | None = None
+        self,
+        batch_size: int,
+        device: DeviceLike,
+        *,
+        shuffle: bool = False,
+        seed: int | None = None,
+        progress: Progress | None = None,
     ) -> BatchedDataset:
         """Load the dataset."""
-        return self.dataset.load(batch_size, device, progress=progress)
+        return self.dataset.load(
+            batch_size, device, shuffle=shuffle, seed=seed, progress=progress
+        )
