@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import typer
@@ -29,13 +30,17 @@ from faultforge.loading import (
     ModelBundle,
 )
 from faultforge.progress import Progress
+from matplotlib.backends.registry import BackendFilter, backend_registry
+from matplotlib.figure import Figure
 
 from systolic._rust import ArrayConfig, PeRegisterKind
 from systolic.agreement import compare_matmul, summarize
 from systolic.experiment import ReliabilityMetric, SystolicFaultInjection
 from systolic.fault import RegisterFaults
-from systolic.profiling import save_profiling_artifact
+from systolic.profiling import load_profiling_artifact, save_profiling_artifact
 from systolic.profiling_driver import run_profiling
+from systolic.profiling_plots import build_gap_heatmap_figure
+from systolic.profiling_similarity import Regime, gap_grids
 
 app = typer.Typer(
     pretty_exceptions_enable=False,
@@ -530,3 +535,89 @@ def profile(
         output.parent.mkdir(parents=True)
 
     save_profiling_artifact(output, artifact, metadata)
+
+
+def _show_or_save(fig: Figure, output: Path | None) -> None:
+    if output is not None:
+        fig.savefig(output)
+        return
+
+    # `plt.show()` silently does nothing on a non-interactive backend (e.g.
+    # the "agg" fallback matplotlib picks when no GUI toolkit like PyQt or
+    # tkinter is importable) - check first so a missing --output doesn't look
+    # like the command did nothing.
+    backend = plt.get_backend()
+    interactive_backends = {
+        name.lower()
+        for name in backend_registry.list_builtin(BackendFilter.INTERACTIVE)
+    }
+    if backend.lower() not in interactive_backends:
+        logger.error(
+            f"no --output given and matplotlib has no interactive backend "
+            f"available (using {backend!r}). Install a GUI toolkit matplotlib "
+            "can use (e.g. PyQt6, or a working tkinter), or pass --output to "
+            "save the figure to a file instead."
+        )
+        raise typer.Exit(1)
+
+    # `fig` was built via the `Figure` OO API directly (see `profiling_plots`),
+    # so pyplot never tracked it the way a `plt.figure()`-created figure would
+    # be - `plt.show()` only displays figures pyplot is tracking, so without
+    # this it would silently do nothing. Passing an untracked `Figure` as
+    # `num` makes `plt.figure()` adopt it instead of creating a new one.
+    plt.figure(fig)
+    plt.show()
+
+
+@app.command(no_args_is_help=True)
+def plot_gap_heatmap(
+    artifact: Annotated[
+        Path,
+        typer.Argument(help="A profiling artifact produced by `systolic profile`."),
+    ],
+    regime: Annotated[
+        Regime,
+        typer.Option(help="Which profiled input regime to compare PEs within."),
+    ] = Regime.Active,
+    sample_size: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help=(
+                "How many observations to compare per PE. Every PE needs at "
+                "least twice this many recorded samples to take part; PEs "
+                "with fewer are excluded and shown in grey."
+            ),
+        ),
+    ] = 200,
+    seed: Annotated[
+        int,
+        typer.Option(help="Seed for subsampling each PE's observations."),
+    ] = 0,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Save the figure here instead of opening a window."),
+    ] = None,
+) -> None:
+    """Show, per PE, how different its profiled inputs are from the array as a whole.
+
+    For each variable the regime records (activation, weight, partial sum),
+    draws an `array_rows x array_cols` heatmap of one number per PE: how much
+    that PE's sample of values differs from a sample pooled over the entire
+    array. A uniformly dark heatmap says the array can be treated as one
+    pool; visible row or column stripes say row- or column-specific
+    modeling would capture something real.
+    """
+    arrays, _metadata = load_profiling_artifact(artifact)
+    grids = gap_grids(arrays, regime, sample_size=sample_size, seed=seed)
+
+    noise_floors = ", ".join(
+        f"{variable.value}={grid.noise_floor():.3f}" for variable, grid in grids.items()
+    )
+    print(f"Noise floor (gap of a PE against itself): {noise_floors}")
+    print(
+        "A PE's own gap against the pooled array is only meaningful once it clearly exceeds this."
+    )
+
+    fig = build_gap_heatmap_figure(grids, regime)
+    _show_or_save(fig, output)

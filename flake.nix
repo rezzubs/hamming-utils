@@ -19,7 +19,17 @@
     # uv-installed ruff/ty). Same libraries are needed in both cases, so
     # both variables share this one list. Requires `programs.nix-ld.enable`
     # in your NixOS system configuration.
-    foreignLibraryPath = pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib pkgs.zlib];
+    foreignLibraryPath = pkgs.lib.makeLibraryPath [
+      pkgs.stdenv.cc.cc.lib
+      pkgs.zlib
+      # matplotlib's compiled `_c_internal_utils` extension dlopen()s these to
+      # probe for a usable display (`display_is_valid()`); without them the
+      # dlopen silently fails, matplotlib assumes headless, and it falls back
+      # to the non-interactive Agg backend even when a real X11/Wayland
+      # session is running.
+      pkgs.libX11
+      pkgs.wayland
+    ];
   in {
     devShells.${system}.default = pkgs.mkShell {
       packages = [
