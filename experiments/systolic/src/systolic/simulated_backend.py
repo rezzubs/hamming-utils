@@ -5,8 +5,8 @@ from typing import final, override
 import torch
 from torch import Tensor
 
-from systolic._rust import Fault, Mapping, simulated_matmul
-from systolic.backend import SystolicBackend
+from systolic._rust import Fault, simulated_matmul
+from systolic.backend import MappingCache, SystolicBackend
 
 
 @final
@@ -23,19 +23,7 @@ class SimulatedBackend(SystolicBackend):
         self._nrows = nrows
         self._ncols = ncols
         self._fault: Fault | None = None
-        # One Mapping per distinct weight shape seen so far: a physical
-        # fault lifts/simulates differently per layer, but the mapping
-        # itself only depends on the weight shape and array size.
-        self._mappings: dict[torch.Size, Mapping] = {}
-
-    def _mapping_for(self, weights: Tensor) -> Mapping:
-        mapping = self._mappings.get(weights.shape)
-        if mapping is None:
-            mapping = Mapping.auto_for(
-                weights.numpy(force=True), self._nrows, self._ncols
-            )
-            self._mappings[weights.shape] = mapping
-        return mapping
+        self._mapping_cache = MappingCache(nrows, ncols)
 
     @override
     def matmul(self, weights: Tensor, activations: Tensor) -> Tensor:
@@ -44,7 +32,7 @@ class SimulatedBackend(SystolicBackend):
                 f"SimulatedBackend only supports float32, got {weights.dtype}"
             )
 
-        mapping = self._mapping_for(weights)
+        mapping = self._mapping_cache.get(weights)
         result = simulated_matmul(
             mapping,
             weights.numpy(force=True),

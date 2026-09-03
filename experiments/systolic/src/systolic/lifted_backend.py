@@ -5,8 +5,8 @@ from typing import final, override
 import torch
 from torch import Tensor
 
-from systolic._rust import Fault, LiftedFault, Mapping
-from systolic.backend import SystolicBackend
+from systolic._rust import Fault, LiftedFault
+from systolic.backend import MappingCache, SystolicBackend
 from systolic.lift_apply import apply_lifted_register_fault
 
 
@@ -24,20 +24,11 @@ class LiftedBackend(SystolicBackend):
         self._nrows = nrows
         self._ncols = ncols
         self._fault: Fault | None = None
-        self._mappings: dict[torch.Size, Mapping] = {}
+        self._mapping_cache = MappingCache(nrows, ncols)
         # A single physical fault lifts differently per weight shape, so the
         # lift result is cached per (shape, fault) and reused across every
         # batch of a run.
         self._lifts: dict[tuple[torch.Size, Fault], LiftedFault] = {}
-
-    def _mapping_for(self, weights: Tensor) -> Mapping:
-        mapping = self._mappings.get(weights.shape)
-        if mapping is None:
-            mapping = Mapping.auto_for(
-                weights.numpy(force=True), self._nrows, self._ncols
-            )
-            self._mappings[weights.shape] = mapping
-        return mapping
 
     @override
     def matmul(self, weights: Tensor, activations: Tensor) -> Tensor:
@@ -49,7 +40,7 @@ class LiftedBackend(SystolicBackend):
         if self._fault is None:
             return weights @ activations
 
-        mapping = self._mapping_for(weights)
+        mapping = self._mapping_cache.get(weights)
         key = (weights.shape, self._fault)
         lifted = self._lifts.get(key)
         if lifted is None:

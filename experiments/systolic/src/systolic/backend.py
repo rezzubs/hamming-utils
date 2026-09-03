@@ -2,12 +2,14 @@
 
 See `systolic` for a general overview.
 """
+from typing import final
 
 import abc
 
+import torch
 from torch import Tensor
 
-from systolic._rust import Fault
+from systolic._rust import Fault, Mapping
 
 
 class SystolicBackend(abc.ABC):
@@ -41,3 +43,29 @@ class SystolicBackend(abc.ABC):
     def ncols(self) -> int:
         """Return the number of columns in the systolic array."""
         ...
+
+
+@final
+class MappingCache:
+    """Caches one `Mapping` per distinct weight shape for a fixed array size.
+
+    A physical fault lifts/simulates differently per layer, but the mapping
+    itself only depends on the weight shape and array size - backends with
+    many layers sharing one array reuse the same cache instance across all
+    of them.
+    """
+
+    def __init__(self, nrows: int, ncols: int) -> None:
+        self._nrows = nrows
+        self._ncols = ncols
+        self._mappings: dict[torch.Size, Mapping] = {}
+
+    def get(self, weights: Tensor) -> Mapping:
+        """Return the cached `Mapping` for `weights.shape`, building it if needed."""
+        mapping = self._mappings.get(weights.shape)
+        if mapping is None:
+            mapping = Mapping.auto_for(
+                weights.numpy(force=True), self._nrows, self._ncols
+            )
+            self._mappings[weights.shape] = mapping
+        return mapping
