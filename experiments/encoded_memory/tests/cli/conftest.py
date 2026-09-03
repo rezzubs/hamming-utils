@@ -62,13 +62,21 @@ class _FakeBundle(ModelBundle):
 
     @override
     def load_dataset(
-        self, batch_size: int, device: DeviceLike, *, progress=None
+        self,
+        batch_size: int,
+        device: DeviceLike,
+        *,
+        shuffle: bool = False,
+        seed: int | None = None,
+        progress=None,
     ) -> BatchedDataset:
         n = self._batch_size * self._num_batches
         inputs = torch.randn(n, self._in_features)
         targets = torch.randint(0, self._out_features, (n,))
         dataset = TensorDataset(inputs, targets)
-        return BatchedDataset.from_dataset(dataset, batch_size, device)
+        return BatchedDataset.from_dataset(
+            dataset, batch_size, device, shuffle=shuffle, seed=seed
+        )
 
     @override
     def fingerprint(self) -> Fingerprint:

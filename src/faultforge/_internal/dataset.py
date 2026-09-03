@@ -80,11 +80,22 @@ class BatchedDataset(abc.ABC):
         dataset: Dataset[Any],
         batch_size: int = DEFAULT_BATCH_SIZE,
         device: DeviceLike = DEFAULT_DEVICE,
+        *,
+        shuffle: bool = False,
+        seed: int | None = None,
     ) -> BatchedDataset:
+        """Wrap `dataset` as a `BatchedDataset`.
+
+        `shuffle`/`seed` control random-order iteration (e.g. for uniform
+        dataset subsampling); the default preserves the dataset's on-disk
+        order.
+        """
         return _BatchedDataset(
             dataset,
             torch.device(device),
             batch_size,
+            shuffle,
+            seed,
         )
 
     def precompute(
@@ -104,22 +115,35 @@ class _BatchedDataset(BatchedDataset):
     _loader: Iterator[Any]
     _device: torch.device
     _batch_size: int
+    _shuffle: bool
+    _seed: int | None
 
     def __init__(
-        self, dataset: Dataset[Any], device: torch.device, batch_size: int
+        self,
+        dataset: Dataset[Any],
+        device: torch.device,
+        batch_size: int,
+        shuffle: bool = False,
+        seed: int | None = None,
     ) -> None:
         self._dataset = dataset
         self._device = device
         self._batch_size = batch_size
+        self._shuffle = shuffle
+        self._seed = seed
         self._loader = self._get_loader()
         self.reset()
 
     def _get_loader(self) -> Iterator[Any]:
+        generator = None
+        if self._seed is not None:
+            generator = torch.Generator().manual_seed(self._seed)
         return iter(
             DataLoader(
                 self._dataset,
                 batch_size=self._batch_size,
-                shuffle=False,
+                shuffle=self._shuffle,
+                generator=generator,
             )
         )
 

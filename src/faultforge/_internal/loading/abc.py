@@ -27,9 +27,20 @@ class ModelBundle(abc.ABC):
 
     @abc.abstractmethod
     def load_dataset(
-        self, batch_size: int, device: DeviceLike, *, progress: Progress | None = None
+        self,
+        batch_size: int,
+        device: DeviceLike,
+        *,
+        shuffle: bool = False,
+        seed: int | None = None,
+        progress: Progress | None = None,
     ) -> BatchedDataset:
-        """Load the dataset."""
+        """Load the dataset.
+
+        `shuffle`/`seed` control random-order iteration (e.g. for uniform
+        dataset subsampling); the default preserves the dataset's on-disk
+        order.
+        """
 
     @abc.abstractmethod
     def fingerprint(self) -> Fingerprint:
