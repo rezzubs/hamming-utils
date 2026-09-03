@@ -2,9 +2,9 @@
 
 See `systolic` for a general overview.
 """
-from typing import final
 
 import abc
+from typing import final
 
 import torch
 from torch import Tensor

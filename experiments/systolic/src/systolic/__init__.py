@@ -17,6 +17,12 @@ torch applies it). `MappedLinear`/`MappedConv2d` replace `nn.Linear`/
 `nn.Conv2d` with versions that route their matmul through a
 `SystolicBackend`; `BackendModel` recursively performs that replacement over
 an existing `nn.Module`.
+
+`run_profiling` walks a model's mapped layers over a random dataset
+subsample through a `ProfilingBackend`, pooling every layer's and batch's
+MAC inputs into one `ProfilingArtifact` - the per-PE input distribution
+later fault-modeling work samples from. `save_profiling_artifact`/
+`load_profiling_artifact` round-trip that artifact to a single `.npz` file.
 """
 
 from systolic._rust import (
@@ -41,6 +47,13 @@ from systolic.fault import RegisterFaults
 from systolic.layers import MappedConv2d, MappedLinear
 from systolic.lifted_backend import LiftedBackend
 from systolic.model import BackendModel
+from systolic.profiling import (
+    ProfilingMetadata,
+    load_profiling_artifact,
+    save_profiling_artifact,
+)
+from systolic.profiling_backend import ProfilingBackend
+from systolic.profiling_driver import run_profiling
 from systolic.simulated_backend import SimulatedBackend
 from systolic.torch_backend import TorchBackend
 
@@ -58,6 +71,8 @@ __all__ = [
     "MappedLinear",
     "Pass",
     "PeRegisterKind",
+    "ProfilingBackend",
+    "ProfilingMetadata",
     "RegisterFaults",
     "ReliabilityMetric",
     "SavedResult",
@@ -66,4 +81,7 @@ __all__ = [
     "SystolicBackend",
     "SystolicFaultInjection",
     "TorchBackend",
+    "load_profiling_artifact",
+    "run_profiling",
+    "save_profiling_artifact",
 ]

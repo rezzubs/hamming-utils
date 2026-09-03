@@ -34,6 +34,8 @@ from systolic._rust import ArrayConfig, PeRegisterKind
 from systolic.agreement import compare_matmul, summarize
 from systolic.experiment import ReliabilityMetric, SystolicFaultInjection
 from systolic.fault import RegisterFaults
+from systolic.profiling import save_profiling_artifact
+from systolic.profiling_driver import run_profiling
 
 app = typer.Typer(
     pretty_exceptions_enable=False,
@@ -430,3 +432,101 @@ def agreement(
             f"max_relative_error mean={report.mean_max_relative_error:.3e} max={report.max_max_relative_error:.3e}, "
             f"top1_flip_fraction mean={report.mean_top1_flip_fraction:.4f} max={report.max_top1_flip_fraction:.4f}"
         )
+
+
+@app.command(no_args_is_help=True)
+def profile(
+    model: Annotated[
+        str,
+        typer.Option(
+            help="Which model to use. Choices depend on the dataset. The list-models command can be used to see available models. Only models built from groups=1 convolutions are supported.",
+            rich_help_panel="Model Setup",
+        ),
+    ],
+    array_rows: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Number of rows in the systolic array.",
+            rich_help_panel="Systolic Array",
+        ),
+    ],
+    array_cols: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Number of columns in the systolic array.",
+            rich_help_panel="Systolic Array",
+        ),
+    ],
+    capacity: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Per-PE, per-regime reservoir capacity.",
+            rich_help_panel="Profiling",
+        ),
+    ],
+    subsample_size: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Number of dataset images to sample uniformly at random.",
+            rich_help_panel="Profiling",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(
+            help="Where to save the profiling artifact.",
+            rich_help_panel="Profiling",
+        ),
+    ],
+    dataset: Annotated[
+        DatasetChoice,
+        typer.Option(
+            help="Which dataset to use",
+            rich_help_panel="Model Setup",
+        ),
+    ] = DatasetChoice.ImageNet,
+    imagenet_root: Annotated[
+        str | None,
+        typer.Option(
+            help="Path to a local directory containing ILSVRC2012_devkit_t12.tar.gz  and ILSVRC2012_img_val.tar. Required when --dataset is imagenet.",
+            rich_help_panel="Model Setup",
+        ),
+    ] = None,
+    seed: Annotated[
+        int,
+        typer.Option(
+            help="Seed for the dataset subsample and the profiler's reservoir sampling.",
+            rich_help_panel="Profiling",
+        ),
+    ] = 0,
+    device: Annotated[
+        str,
+        typer.Option(
+            help="Which device to use. PyTorch device string.",
+            rich_help_panel="Misc Settings",
+        ),
+    ] = "cpu",
+) -> None:
+    """Profile a model's per-PE logic inputs over a dataset and save the artifact."""
+    bundle = _init_model_bundle(dataset, model, imagenet_root)
+
+    artifact, metadata = run_profiling(
+        bundle,
+        (array_rows, array_cols),
+        capacity,
+        subsample_size=subsample_size,
+        seed=seed,
+        device=device,
+        progress=Progress(),
+    )
+
+    output = Path(output).expanduser()
+    if not output.parent.exists():
+        logger.info(f"Creating output parent directory {output.parent}")
+        output.parent.mkdir(parents=True)
+
+    save_profiling_artifact(output, artifact, metadata)
