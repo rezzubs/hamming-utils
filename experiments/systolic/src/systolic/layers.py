@@ -3,6 +3,7 @@
 from typing import final, override
 
 import torch.nn.functional as F
+from faultforge.progress import Progress, stage
 from torch import Tensor, nn
 
 from systolic.backend import SystolicBackend
@@ -43,6 +44,23 @@ def conv2d_output_width(conv2d: nn.Conv2d, input_width: int) -> int:
     return (effective_input_width - effective_kernel_width) // stride_width + 1
 
 
+def _layer_label(name: str, position: str, kind: str, shape: str) -> str:
+    """Build a per-layer progress label: `"features.7 [8/20] Conv2d(576x3136x8)"`.
+
+    `name` is the dotted path within the wrapped model and `position` its place
+    among the model's mapped layers, both empty for a layer built outside a
+    `BackendModel`. `shape` is the backend matmul's `out x in x batch`
+    dimensions, the number that actually predicts how slow the layer will be.
+
+    `position` reflects where a layer sits in the module tree, not how far a
+    forward pass has got: a model whose `forward` visits its children out of
+    registration order will show them out of order.
+    """
+    parts = [part for part in (name, f"[{position}]" if position else "") if part]
+    prefix = f"{' '.join(parts)} " if parts else ""
+    return f"{prefix}{kind}({shape})"
+
+
 @final
 class MappedLinear(nn.Module):
     """Routes an `nn.Linear`'s matmul through a `SystolicBackend`."""
@@ -52,21 +70,40 @@ class MappedLinear(nn.Module):
     # dataclass-generated __init__ has no hook to do, and dataclass's auto
     # __eq__/__repr__ would conflict with nn.Module's own (tensor comparisons in
     # __eq__, tree-printing repr).
-    def __init__(self, inner: nn.Linear, backend: SystolicBackend) -> None:
+    def __init__(
+        self,
+        inner: nn.Linear,
+        backend: SystolicBackend,
+        *,
+        name: str = "",
+        position: str = "",
+        progress: Progress | None = None,
+    ) -> None:
         super().__init__()
         self.inner = inner
         self.backend = backend
+        self.name = name
+        self.position = position
+        self.progress = progress
 
     @override
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() != 2:
             raise ValueError("MappedLinear only supports 2d inputs")
-        # nn.Linear.weight is already (out_features, in_features); only the
-        # activations need transposing to the backend's (in_features, batch)
-        # convention, then the result transposed back to (batch, out_features).
-        out = self.backend.matmul(self.inner.weight, x.T).T
-        if self.inner.bias is not None:  # None when nn.Linear(..., bias=False)
-            out = out + self.inner.bias
+        out_features, in_features = self.inner.weight.shape
+        label = _layer_label(
+            self.name,
+            self.position,
+            "Linear",
+            f"{out_features}x{in_features}x{x.shape[0]}",
+        )
+        with stage(self.progress, label):
+            # nn.Linear.weight is already (out_features, in_features); only the
+            # activations need transposing to the backend's (in_features, batch)
+            # convention, then the result transposed back to (batch, out_features).
+            out = self.backend.matmul(self.inner.weight, x.T).T
+            if self.inner.bias is not None:  # None when nn.Linear(..., bias=False)
+                out = out + self.inner.bias
         return out
 
 
@@ -88,7 +125,15 @@ class MappedConv2d(nn.Module):
     """
 
     # See comment on MappedLinear `__init__`.
-    def __init__(self, inner: nn.Conv2d, backend: SystolicBackend) -> None:
+    def __init__(
+        self,
+        inner: nn.Conv2d,
+        backend: SystolicBackend,
+        *,
+        name: str = "",
+        position: str = "",
+        progress: Progress | None = None,
+    ) -> None:
         super().__init__()
         if inner.groups != 1:
             raise ValueError(
@@ -97,6 +142,9 @@ class MappedConv2d(nn.Module):
             )
         self.inner = inner
         self.backend = backend
+        self.name = name
+        self.position = position
+        self.progress = progress
 
     @override
     def forward(self, x: Tensor) -> Tensor:
@@ -118,70 +166,81 @@ class MappedConv2d(nn.Module):
         # How many numbers the kernel reads at each position it visits.
         flattened_patch_size = input_channels * kernel_height * kernel_width
 
-        # im2col: for every position the kernel visits, extract the
-        # flattened_patch_size values under it into one column, for every
-        # batch element at once.
-        #
-        # patches: (batch_size, flattened_patch_size, number_of_output_positions)
-        patches = F.unfold(
-            x,
-            self.inner.kernel_size,
-            dilation=self.inner.dilation,
-            padding=self.inner.padding,
-            stride=self.inner.stride,
+        label = _layer_label(
+            self.name,
+            self.position,
+            "Conv2d",
+            f"{output_channels}x{flattened_patch_size}x{batch_size * output_position_count}",
         )
+        with stage(self.progress, label):
+            # im2col: for every position the kernel visits, extract the
+            # flattened_patch_size values under it into one column, for every
+            # batch element at once.
+            #
+            # patches: (batch_size, flattened_patch_size, number_of_output_positions)
+            patches = F.unfold(
+                x,
+                self.inner.kernel_size,
+                dilation=self.inner.dilation,
+                padding=self.inner.padding,
+                stride=self.inner.stride,
+            )
 
-        # Flatten the kernel's weights into a matrix that, multiplied by one
-        # patch column, produces that position's output value across all
-        # output channels at once.
-        #
-        # weight_matrix: (output_channels, flattened_patch_size)
-        weight_matrix = self.inner.weight.reshape(output_channels, flattened_patch_size)
+            # Flatten the kernel's weights into a matrix that, multiplied by one
+            # patch column, produces that position's output value across all
+            # output channels at once.
+            #
+            # weight_matrix: (output_channels, flattened_patch_size)
+            weight_matrix = self.inner.weight.reshape(
+                output_channels, flattened_patch_size
+            )
 
-        # The backend's matmul only has one "batch"/"free" axis - weights
-        # (out_features, in_features) @ activations (in_features, batch) ->
-        # (out_features, batch)). To cover every batch element with a single
-        # matmul call instead of one call per batch element, lay every batch
-        # element's patch columns side by side along that axis.
-        #
-        # Tiling batches together only needs to preserve the values a
-        # plain matmul would produce, which it does: the zero-padding
-        # cycles added by the array's dataflow (`shift_activations` in
-        # `crates/systolic/src/array.rs`) never contribute to a real output
-        # under plain multiply-accumulate. Whether batching also preserves
-        # fault behavior is a separate question, answered on `XorMaskHook`'s doc
-        # comment for the hooks implemented today.
-        #
-        # patches_matrix: (flattened_patch_size, batch_size * number_of_output_positions)
-        patches_matrix = patches.permute(1, 0, 2).reshape(
-            flattened_patch_size, batch_size * output_position_count
-        )
+            # The backend's matmul only has one "batch"/"free" axis - weights
+            # (out_features, in_features) @ activations (in_features, batch) ->
+            # (out_features, batch)). To cover every batch element with a single
+            # matmul call instead of one call per batch element, lay every batch
+            # element's patch columns side by side along that axis.
+            #
+            # Tiling batches together only needs to preserve the values a
+            # plain matmul would produce, which it does: the zero-padding
+            # cycles added by the array's dataflow (`shift_activations` in
+            # `crates/systolic/src/array.rs`) never contribute to a real output
+            # under plain multiply-accumulate. Whether batching also preserves
+            # fault behavior is a separate question, answered on `XorMaskHook`'s doc
+            # comment for the hooks implemented today.
+            #
+            # patches_matrix: (flattened_patch_size, batch_size * number_of_output_positions)
+            patches_matrix = patches.permute(1, 0, 2).reshape(
+                flattened_patch_size, batch_size * output_position_count
+            )
 
-        # One matmul computes every output value, for every output channel,
-        # for every batch element, all at once.
-        #
-        # raw_output: (output_channels, batch_size * number_of_output_positions)
-        raw_output = self.backend.matmul(weight_matrix, patches_matrix)
+            # One matmul computes every output value, for every output channel,
+            # for every batch element, all at once.
+            #
+            # raw_output: (output_channels, batch_size * number_of_output_positions)
+            raw_output = self.backend.matmul(weight_matrix, patches_matrix)
 
-        # Undo the batch-tiling from above, then move the batch axis back to
-        # the front to match PyTorch's (batch, channel, height, width)
-        # convention.
-        #
-        # output: (batch_size, output_channels, number_of_output_positions)
-        output = raw_output.reshape(
-            output_channels, batch_size, output_position_count
-        ).permute(1, 0, 2)
+            # Undo the batch-tiling from above, then move the batch axis back to
+            # the front to match PyTorch's (batch, channel, height, width)
+            # convention.
+            #
+            # output: (batch_size, output_channels, number_of_output_positions)
+            output = raw_output.reshape(
+                output_channels, batch_size, output_position_count
+            ).permute(1, 0, 2)
 
-        # Unflatten number_of_output_positions back into a 2d
-        # (output_height, output_width) grid.
-        #
-        # out: (batch_size, output_channels, output_height, output_width)
-        out = output.reshape(batch_size, output_channels, output_height, output_width)
+            # Unflatten number_of_output_positions back into a 2d
+            # (output_height, output_width) grid.
+            #
+            # out: (batch_size, output_channels, output_height, output_width)
+            out = output.reshape(
+                batch_size, output_channels, output_height, output_width
+            )
 
-        if self.inner.bias is not None:
-            # Differs from MappedLinear: broadcasts over
-            # (batch, channel, height, width), so it needs an explicit
-            # (1, output_channels, 1, 1) reshape rather than relying on
-            # trailing-dim broadcast.
-            out = out + self.inner.bias.view(1, -1, 1, 1)
+            if self.inner.bias is not None:
+                # Differs from MappedLinear: broadcasts over
+                # (batch, channel, height, width), so it needs an explicit
+                # (1, output_channels, 1, 1) reshape rather than relying on
+                # trailing-dim broadcast.
+                out = out + self.inner.bias.view(1, -1, 1, 1)
         return out

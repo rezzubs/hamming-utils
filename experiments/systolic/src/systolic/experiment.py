@@ -253,7 +253,7 @@ class SystolicFaultInjection(Experiment):
             case "lifted":
                 backend_instance = LiftedBackend(nrows, ncols)
         self._backend = backend_instance
-        self._model = BackendModel(model, self._backend)
+        self._model = BackendModel(model, self._backend, progress=progress)
 
         self._dataset = bundle.load_dataset(batch_size, device, progress=progress)
         if dataset_batch_limit is not None and not preload_dataset:

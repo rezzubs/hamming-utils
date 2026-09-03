@@ -36,7 +36,7 @@ def run_profiling(
     nrows, ncols = array
     model = bundle.load_model(device, dtype=dtype, progress=progress)
     backend = ProfilingBackend(nrows, ncols, capacity, seed)
-    profiling_model = BackendModel(model, backend)
+    profiling_model = BackendModel(model, backend, progress=progress)
 
     # One batch of exactly subsample_size.
     dataset = bundle.load_dataset(
