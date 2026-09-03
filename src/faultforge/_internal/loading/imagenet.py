@@ -167,7 +167,13 @@ class ImageNet(ModelBundle):
 
     @override
     def load_dataset(
-        self, batch_size: int, device: DeviceLike, *, progress: Progress | None = None
+        self,
+        batch_size: int,
+        device: DeviceLike,
+        *,
+        shuffle: bool = False,
+        seed: int | None = None,
+        progress: Progress | None = None,
     ) -> BatchedDataset:
         with stage(progress, "Loading ImageNet dataset"):
             dataset = datasets.ImageNet(
@@ -176,4 +182,6 @@ class ImageNet(ModelBundle):
                 transform=self.get_transform(progress=progress),
             )
             assert isinstance(dataset, Dataset)
-        return BatchedDataset.from_dataset(dataset, batch_size, device)
+        return BatchedDataset.from_dataset(
+            dataset, batch_size, device, shuffle=shuffle, seed=seed
+        )
