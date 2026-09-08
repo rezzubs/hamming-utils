@@ -37,6 +37,7 @@ library.
   module that actually explains them rather than crowding the root namespace.
   (#30)
 - The `BatchedDataset` API now supports shuffling (#32)
+- The `Progress` API now properly handles nested stages (#33)
 
 ### Removed
 
