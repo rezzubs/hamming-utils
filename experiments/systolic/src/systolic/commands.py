@@ -39,7 +39,11 @@ from systolic.experiment import ReliabilityMetric, SystolicFaultInjection
 from systolic.fault import RegisterFaults
 from systolic.profiling import load_profiling_artifact, save_profiling_artifact
 from systolic.profiling_driver import run_profiling
-from systolic.profiling_plots import build_gap_heatmap_figure
+from systolic.profiling_plots import (
+    build_ecdf_spread_figure,
+    build_gap_heatmap_figure,
+    build_pe_ecdf_figure,
+)
 from systolic.profiling_similarity import Regime, gap_grids
 
 app = typer.Typer(
@@ -620,4 +624,60 @@ def plot_gap_heatmap(
     )
 
     fig = build_gap_heatmap_figure(grids, regime)
+    _show_or_save(fig, output)
+
+
+@app.command(no_args_is_help=True)
+def plot_pe_ecdf(
+    artifact: Annotated[
+        Path,
+        typer.Argument(help="A profiling artifact produced by `systolic profile`."),
+    ],
+    row: Annotated[int, typer.Option(help="Which PE row to inspect.")],
+    col: Annotated[int, typer.Option(help="Which PE column to inspect.")],
+    regime: Annotated[
+        Regime,
+        typer.Option(help="Which profiled input regime to compare the PE within."),
+    ] = Regime.Active,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Save the figure here instead of opening a window."),
+    ] = None,
+) -> None:
+    """Show one PE's ECDF against the pooled array, for a closer look after `plot-gap-heatmap`.
+
+    For each variable the regime records, overlays the chosen PE's step
+    function against the whole array's and marks the largest vertical gap
+    between them - the same comparison `plot-gap-heatmap`'s numbers
+    summarize, made visible.
+    """
+    arrays, _metadata = load_profiling_artifact(artifact)
+    fig = build_pe_ecdf_figure(arrays, regime, row=row, col=col)
+    _show_or_save(fig, output)
+
+
+@app.command(no_args_is_help=True)
+def plot_ecdf_spread(
+    artifact: Annotated[
+        Path,
+        typer.Argument(help="A profiling artifact produced by `systolic profile`."),
+    ],
+    regime: Annotated[
+        Regime,
+        typer.Option(help="Which profiled input regime to compare PEs within."),
+    ] = Regime.Active,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Save the figure here instead of opening a window."),
+    ] = None,
+) -> None:
+    """Show every PE's ECDF against the pooled array, for each variable.
+
+    Complements `plot-gap-heatmap`: the heatmap says how much each PE
+    differs from the pooled array, this shows how - a shifted distribution,
+    a heavier tail, a different spread - by drawing every PE's step
+    function together with the pooled one.
+    """
+    arrays, _metadata = load_profiling_artifact(artifact)
+    fig = build_ecdf_spread_figure(arrays, regime)
     _show_or_save(fig, output)

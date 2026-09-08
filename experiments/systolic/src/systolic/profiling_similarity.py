@@ -129,16 +129,92 @@ def ecdf_gap(left: npt.NDArray[np.floating], right: npt.NDArray[np.floating]) ->
     if left.size == 0 or right.size == 0:
         raise ValueError("cannot compare an empty sample")
 
-    # Both step functions are flat except where a value was observed, so the
-    # largest gap between them is always reached at one of those values.
-    # Checking every observed value therefore finds the true maximum, with
-    # no need to scan a grid of candidate thresholds.
-    candidate_thresholds = np.concatenate([left, right])
+    _, left_ecdf, right_ecdf = _ecdf_curves(left, right)
+    return float(np.abs(left_ecdf - right_ecdf).max())
 
+
+def ecdf_gap_location(
+    left: npt.NDArray[np.floating], right: npt.NDArray[np.floating]
+) -> tuple[float, float, float]:
+    """Where the largest ECDF gap between `left` and `right` occurs.
+
+    Returns `(x, left_y, right_y)`: the value at which the two step
+    functions are furthest apart, and each one's height there.
+    `abs(left_y - right_y)` is the same number `ecdf_gap` returns. Meant for
+    marking that location on a plot; see `profiling_plots`.
+
+    Raises:
+        ValueError: If either sample is empty.
+    """
+    if left.size == 0 or right.size == 0:
+        raise ValueError("cannot compare an empty sample")
+
+    thresholds, left_ecdf, right_ecdf = _ecdf_curves(left, right)
+    argmax = int(np.abs(left_ecdf - right_ecdf).argmax())
+    return (
+        float(thresholds[argmax]),
+        float(left_ecdf[argmax]),
+        float(right_ecdf[argmax]),
+    )
+
+
+def _ecdf_curves(
+    left: npt.NDArray[np.floating], right: npt.NDArray[np.floating]
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Both samples' ECDF heights at every value either one observed.
+
+    Both step functions are flat except where a value was observed, so the
+    largest gap between them is always reached at one of those values.
+    Checking every observed value therefore finds the true maximum, with no
+    need to scan a grid of candidate thresholds.
+    """
+    candidate_thresholds = np.concatenate([left, right])
     left_ecdf = _fraction_at_or_below(left, candidate_thresholds)
     right_ecdf = _fraction_at_or_below(right, candidate_thresholds)
+    return candidate_thresholds, left_ecdf, right_ecdf
 
-    return float(np.abs(left_ecdf - right_ecdf).max())
+
+def ecdf_points(
+    sample: npt.NDArray[np.floating],
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.float64]]:
+    """The step points of `sample`'s ECDF, ready to plot.
+
+    `x` is `sample` sorted; `y` is the matching cumulative fraction. Plot
+    with a "post" step style (e.g. `ax.step(x, y, where="post")`) to
+    reproduce the step function `ecdf_gap` compares.
+
+    Raises:
+        ValueError: If `sample` is empty.
+    """
+    if sample.size == 0:
+        raise ValueError("cannot build an ECDF from an empty sample")
+
+    x = np.sort(sample)
+    y = np.arange(1, x.size + 1) / x.size
+    return x, y
+
+
+def pooled_sample(
+    samples: npt.NDArray[np.float32], fill: npt.NDArray[np.uintp]
+) -> npt.NDArray[np.float32]:
+    """Every recorded value from every PE with at least one, concatenated.
+
+    Unlike `gap_grid`'s internal pooling, this keeps each PE's full sample
+    rather than an equal-size subsample: it's meant for visual intuition
+    (see `profiling_plots`), not for a scale-sensitive comparison, so a PE
+    with more recorded values is allowed to weigh more here. A gap computed
+    against this will therefore be close to, but not exactly, what
+    `gap_grid` reports for the same PE.
+    """
+    array_rows, array_cols, _capacity = samples.shape
+    return np.concatenate(
+        [
+            samples[row, col, : fill[row, col]]
+            for row in range(array_rows)
+            for col in range(array_cols)
+            if fill[row, col] > 0
+        ]
+    )
 
 
 def _fraction_at_or_below(
