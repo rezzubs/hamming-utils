@@ -95,7 +95,9 @@ mod tests {
     fn bijective_1d() {
         let shape = &[7usize];
         let n = total_bits(shape, u8::BITS_COUNT);
-        let outputs: HashSet<_> = (0..n).map(|i| bit_index_to_array_index::<u8>(i, shape)).collect();
+        let outputs: HashSet<_> = (0..n)
+            .map(|i| bit_index_to_array_index::<u8>(i, shape))
+            .collect();
         assert_eq!(outputs.len(), n);
     }
 
@@ -103,7 +105,9 @@ mod tests {
     fn bijective_2d() {
         let shape = &[3usize, 5];
         let n = total_bits(shape, u16::BITS_COUNT);
-        let outputs: HashSet<_> = (0..n).map(|i| bit_index_to_array_index::<u16>(i, shape)).collect();
+        let outputs: HashSet<_> = (0..n)
+            .map(|i| bit_index_to_array_index::<u16>(i, shape))
+            .collect();
         assert_eq!(outputs.len(), n);
     }
 
@@ -111,7 +115,9 @@ mod tests {
     fn bijective_3d() {
         let shape = &[2usize, 3, 4];
         let n = total_bits(shape, u32::BITS_COUNT);
-        let outputs: HashSet<_> = (0..n).map(|i| bit_index_to_array_index::<u32>(i, shape)).collect();
+        let outputs: HashSet<_> = (0..n)
+            .map(|i| bit_index_to_array_index::<u32>(i, shape))
+            .collect();
         assert_eq!(outputs.len(), n);
     }
 

@@ -107,7 +107,9 @@ where
         It: Iterator<Item = (Fault, usize)>,
     {
         let offsets = self.bit_offsets();
-        let total_bits = *offsets.last().expect("offsets always has at least one element");
+        let total_bits = *offsets
+            .last()
+            .expect("offsets always has at least one element");
 
         for (fault, bit_index) in faults {
             assert!(bit_index < total_bits, "out of bounds");

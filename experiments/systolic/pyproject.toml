@@ -1,0 +1,41 @@
+[project]
+name = "systolic"
+version = "0.2.1"
+description = "Systolic-array register-fault injection - a FaultForge experiment"
+authors = [
+    { name = "Marten Roots", email = "marten.roots@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "faultforge==0.2.1",
+    "numpy>=2.3.1",
+    "pydantic>=2.12.3",
+    "torch>=2.7.1",
+    "typer>=0.15",
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[project.urls]
+Repository = "https://github.com/rezzubs/faultforge"
+Issues = "https://github.com/rezzubs/faultforge/issues"
+Changelog = "https://github.com/rezzubs/faultforge/blob/main/CHANGELOG.md"
+
+[project.scripts]
+systolic = "systolic.main:main"
+
+[tool.uv.sources]
+faultforge = { workspace = true }
+
+[build-system]
+requires = ["maturin>=1.12,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "systolic._rust"
+manifest-path = "../../crates/systolic_bindings/Cargo.toml"
+python-source = "src"

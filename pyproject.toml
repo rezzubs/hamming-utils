@@ -28,7 +28,7 @@ Issues = "https://github.com/rezzubs/faultforge/issues"
 Changelog = "https://github.com/rezzubs/faultforge/blob/main/CHANGELOG.md"
 
 [tool.uv.workspace]
-members = ["experiments/encoded_memory"]
+members = ["experiments/encoded_memory", "experiments/systolic"]
 
 [tool.uv]
 default-groups = ["dev"]

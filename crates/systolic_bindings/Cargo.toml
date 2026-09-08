@@ -1,0 +1,15 @@
+[package]
+name = "systolic_bindings"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+# This name will be used for the .so file that is used by Python.
+name = "_rust"
+
+[dependencies]
+systolic = { path = "../systolic" }
+numpy.workspace = true
+pyo3.workspace = true
+rand.workspace = true

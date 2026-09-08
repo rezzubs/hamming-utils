@@ -1,0 +1,23 @@
+//! A [`systolic array`](SystolicArray) simulator with support for custom
+//! [`mappings`](Mapping).
+//!
+//! A [`Mapping`] describes how a matrix multiplication is performed on the
+//! array. It can also be used to translate faults into operations on the
+//! inputs/outputs; this enables much faster fault simulation than simulating
+//! the array.
+
+pub mod array;
+pub mod fault;
+mod helper;
+mod mixed_radix;
+pub mod profile;
+mod reservoir;
+mod space;
+#[cfg(test)]
+pub(crate) mod test_utilities;
+
+pub use array::{
+    Connection, CreationError, Index, Index2, InvalidMappingError, Mapping, Pass, Regime,
+    SystolicArray, current_column, shift_activations, unshift_output,
+};
+pub use space::{ArrayConfig, Space};

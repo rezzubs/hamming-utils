@@ -19,7 +19,7 @@
     # uv-installed ruff/ty). Same libraries are needed in both cases, so
     # both variables share this one list. Requires `programs.nix-ld.enable`
     # in your NixOS system configuration.
-    foreignLibraryPath = pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib];
+    foreignLibraryPath = pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib pkgs.zlib];
   in {
     devShells.${system}.default = pkgs.mkShell {
       packages = [
